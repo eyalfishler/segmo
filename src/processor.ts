@@ -434,9 +434,10 @@ export class SegmentationProcessor {
   }
 
   /**
-   * LiveKit TrackProcessor-compatible transformer.
+   * LiveKit TrackProcessor-compatible interface.
    *
-   * Use this with LiveKit's track processor API:
+   * Implements the official processedTrack pattern from
+   * https://github.com/livekit/track-processors-js
    *
    * ```ts
    * const processor = new SegmentationProcessor({ backgroundMode: 'blur' });
@@ -446,66 +447,89 @@ export class SegmentationProcessor {
    */
   toLiveKitProcessor(): {
     name: string;
-    init: (opts: { track: MediaStreamTrack; kind: string }) => Promise<void>;
-    restart: (opts: { track: MediaStreamTrack }) => Promise<void>;
+    init: (opts: { track: MediaStreamTrack; kind: string; element?: HTMLMediaElement }) => Promise<void>;
+    restart: (opts: { track: MediaStreamTrack; kind: string; element?: HTMLMediaElement }) => Promise<void>;
     destroy: () => Promise<void>;
-    processFrame: (
-      inputFrame: VideoFrame,
-      controller: TransformStreamDefaultController<VideoFrame>,
-    ) => Promise<void>;
+    processedTrack?: MediaStreamTrack;
   } {
-    let inputTrack: MediaStreamTrack | null = null;
+    // Pipeline state owned by the processor object
+    let pipelineAbort: AbortController | null = null;
+    let generator: MediaStreamTrackGenerator | null = null;
 
-    return {
+    const startPipeline = (track: MediaStreamTrack, result: { processedTrack?: MediaStreamTrack }) => {
+      // Create Insertable Streams pipeline: input → transform → output
+      const trackProcessor = new MediaStreamTrackProcessor({ track });
+      generator = new MediaStreamTrackGenerator({ kind: 'video' });
+      pipelineAbort = new AbortController();
+
+      const transformer = new TransformStream<VideoFrame, VideoFrame>({
+        transform: (frame, controller) => {
+          const timestamp = frame.timestamp ?? performance.now();
+          const output = this.processFrame(frame, timestamp / 1000);
+
+          if (output) {
+            const outputFrame = new VideoFrame(output, {
+              timestamp: frame.timestamp,
+              alpha: 'discard',
+            });
+            frame.close();
+            controller.enqueue(outputFrame);
+          } else {
+            controller.enqueue(frame);
+          }
+        },
+      });
+
+      trackProcessor.readable
+        .pipeThrough(transformer, { signal: pipelineAbort.signal })
+        .pipeTo(generator.writable, { signal: pipelineAbort.signal })
+        .catch(() => { /* aborted — expected on destroy/restart */ });
+
+      result.processedTrack = generator as unknown as MediaStreamTrack;
+    };
+
+    const stopPipeline = () => {
+      pipelineAbort?.abort();
+      pipelineAbort = null;
+      generator = null;
+    };
+
+    const result: {
+      name: string;
+      processedTrack?: MediaStreamTrack;
+      init: (opts: { track: MediaStreamTrack; kind: string; element?: HTMLMediaElement }) => Promise<void>;
+      restart: (opts: { track: MediaStreamTrack; kind: string; element?: HTMLMediaElement }) => Promise<void>;
+      destroy: () => Promise<void>;
+    } = {
       name: 'segmo-segmentation',
+      processedTrack: undefined,
 
-      init: async (opts: { track: MediaStreamTrack; kind: string }) => {
-        inputTrack = opts.track;
-        const settings = inputTrack.getSettings();
+      init: async (opts) => {
+        const settings = opts.track.getSettings();
         const width = settings.width || 1280;
         const height = settings.height || 720;
         await this.init(width, height);
+        startPipeline(opts.track, result);
       },
 
-      restart: async (opts: { track: MediaStreamTrack }) => {
-        inputTrack = opts.track;
-        // Re-init if resolution changed
-        const settings = inputTrack.getSettings();
+      restart: async (opts) => {
+        stopPipeline();
+        const settings = opts.track.getSettings();
         const width = settings.width || 1280;
         const height = settings.height || 720;
         if (width !== this.width || height !== this.height) {
-          this.destroy();
           await this.init(width, height);
         }
+        startPipeline(opts.track, result);
       },
 
       destroy: async () => {
+        stopPipeline();
         this.destroy();
       },
-
-      processFrame: async (
-        inputFrame: VideoFrame,
-        controller: TransformStreamDefaultController<VideoFrame>,
-      ) => {
-        const timestamp = inputFrame.timestamp ?? performance.now();
-
-        // Process the frame
-        const output = this.processFrame(inputFrame, timestamp / 1000);
-
-        if (output) {
-          // Create output VideoFrame from our canvas
-          const outputFrame = new VideoFrame(output, {
-            timestamp: inputFrame.timestamp,
-            alpha: 'discard',
-          });
-          inputFrame.close();
-          controller.enqueue(outputFrame);
-        } else {
-          // Pass through original frame
-          controller.enqueue(inputFrame);
-        }
-      },
     };
+
+    return result;
   }
 
   /**

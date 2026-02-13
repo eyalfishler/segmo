@@ -194,30 +194,31 @@
     <pre><code>import { SegmentationProcessor } from 'segmo';
 import { Room, createLocalVideoTrack } from 'livekit-client';
 
-// 1. Create processor
+// 1. Create processor (drop-in for @livekit/track-processors)
 const processor = new SegmentationProcessor({
   backgroundMode: 'blur',
-  quality: 'medium',
-  adaptive: true,
+  useWorker: true,    // off-main-thread inference
+  adaptive: true,     // auto quality scaling
 });
 
-// 2. Create & process video track
-const track = await createLocalVideoTrack({
+// 2. Create video track and attach processor
+const videoTrack = await createLocalVideoTrack({
   resolution: { width: 1280, height: 720, frameRate: 30 },
 });
-await track.setProcessor(processor.toLiveKitProcessor());
+await videoTrack.setProcessor(processor.toLiveKitProcessor());
 
 // 3. Connect to room & publish
 const room = new Room();
 await room.connect(serverUrl, token);
-await room.localParticipant.publishTrack(track);
+await room.localParticipant.publishTrack(videoTrack);
 
-// 4. Runtime controls
+// 4. Switch modes at runtime
 processor.setBackgroundMode('blur');
 processor.setBlurRadius(14);
 processor.setBackgroundColor('#1a1a2e');
 
-// 5. Clean up
+// 5. Stop & clean up
+await videoTrack.stopProcessor();
 processor.destroy();
 await room.disconnect();</code></pre>
   </div>

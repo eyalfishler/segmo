@@ -45,21 +45,21 @@ const room = new Room();
 // ============================================================
 
 async function joinRoom(serverUrl: string, token: string) {
-  // Create camera track
-  const track = await createLocalVideoTrack({
+  // Create video track
+  const videoTrack = await createLocalVideoTrack({
     resolution: { width: 1280, height: 720, frameRate: 30 },
   });
 
-  // Attach segmo processor — this is the key line
-  await track.setProcessor(processor.toLiveKitProcessor());
+  // Attach segmo processor (implements official TrackProcessor interface via processedTrack)
+  await videoTrack.setProcessor(processor.toLiveKitProcessor());
 
   // Connect and publish
   await room.connect(serverUrl, token);
-  await room.localParticipant.publishTrack(track);
+  await room.localParticipant.publishTrack(videoTrack);
 
   // Attach local preview
   const localVideo = document.getElementById('local-video') as HTMLVideoElement;
-  track.attach(localVideo);
+  videoTrack.attach(localVideo);
 
   // Handle remote participants
   room.on(RoomEvent.TrackSubscribed, handleRemoteTrack);

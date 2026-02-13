@@ -18,27 +18,54 @@ npm install segmo
 
 ### With LiveKit
 
+Drop-in replacement for `@livekit/track-processors`. Implements the official `TrackProcessor` interface via `processedTrack`.
+
 ```ts
 import { SegmentationProcessor } from 'segmo';
-import { createLocalVideoTrack } from 'livekit-client';
+import { Room, createLocalVideoTrack } from 'livekit-client';
 
+// 1. Create processor
 const processor = new SegmentationProcessor({
   backgroundMode: 'blur',
+  useWorker: true,  // off-main-thread inference
 });
 
-const track = await createLocalVideoTrack({
+// 2. Create video track and attach processor
+const videoTrack = await createLocalVideoTrack({
   resolution: { width: 1280, height: 720, frameRate: 30 },
 });
+await videoTrack.setProcessor(processor.toLiveKitProcessor());
 
-await track.setProcessor(processor.toLiveKitProcessor());
+// 3. Connect and publish
+const room = new Room();
+await room.connect(serverUrl, token);
+await room.localParticipant.publishTrack(videoTrack);
+
+// 4. Switch modes at runtime (no re-initialization needed)
+processor.setBackgroundMode('blur');
+processor.setBlurRadius(14);
+processor.setBackgroundMode('color');
+processor.setBackgroundColor('#1a1a2e');
+
+// 5. Stop processing
+await videoTrack.stopProcessor();
+
+// 6. Clean up
+processor.destroy();
+await room.disconnect();
 ```
 
 ### Without LiveKit
 
+Works with any `MediaStreamTrack` — WebRTC, recording, or custom video pipelines:
+
 ```ts
 import { SegmentationProcessor } from 'segmo';
 
-const processor = new SegmentationProcessor({ backgroundMode: 'blur' });
+const processor = new SegmentationProcessor({
+  backgroundMode: 'blur',
+  useWorker: true,
+});
 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
 const outputTrack = await processor.createProcessedTrack(stream.getVideoTracks()[0]);
 document.querySelector('video').srcObject = new MediaStream([outputTrack]);
@@ -382,8 +409,8 @@ new SegmentationProcessor({
 
 | Method | Description |
 |--------|-------------|
-| `toLiveKitProcessor()` | LiveKit track processor |
-| `createProcessedTrack(track)` | Standalone MediaStreamTrack |
+| `toLiveKitProcessor()` | Official LiveKit `TrackProcessor` (uses `processedTrack`) |
+| `createProcessedTrack(track)` | Standalone `MediaStreamTrack` (non-LiveKit) |
 | `setBackgroundMode(mode)` | Switch mode |
 | `setBackgroundColor(hex)` | Set color |
 | `setBackgroundImage(img)` | Set image |
