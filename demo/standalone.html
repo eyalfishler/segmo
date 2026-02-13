@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>segmo — Full Pipeline Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0f; color: #e0e0e0;
+      min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    }
+
+    header { padding: 24px; text-align: center; }
+    header h1 {
+      font-size: 28px; font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    header p { color: #888; margin-top: 4px; font-size: 14px; }
+
+    .container {
+      display: flex; gap: 24px; padding: 0 24px 16px;
+      max-width: 1400px; width: 100%;
+      flex-wrap: wrap; justify-content: center;
+    }
+
+    .video-panel {
+      position: relative; border-radius: 12px; overflow: hidden;
+      background: #111; box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    .video-panel canvas {
+      display: block; width: 640px; height: 360px; object-fit: cover; background: #000;
+    }
+
+    .video-label {
+      position: absolute; top: 12px; left: 12px;
+      background: rgba(0,0,0,0.6); backdrop-filter: blur(8px);
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; color: #fff;
+    }
+
+    .stats {
+      position: absolute; bottom: 12px; left: 12px;
+      background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+      padding: 6px 10px; border-radius: 6px;
+      font-size: 11px; font-family: 'SF Mono', Monaco, monospace;
+      color: #8f8; white-space: pre;
+    }
+
+    .badge {
+      position: absolute; top: 12px; right: 12px;
+      background: rgba(59,59,240,0.7); backdrop-filter: blur(8px);
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 700; color: #fff; text-transform: uppercase;
+    }
+
+    .controls {
+      display: flex; gap: 12px; padding: 16px 20px;
+      background: #13131a; border-radius: 12px;
+      flex-wrap: wrap; justify-content: center;
+      max-width: 900px; width: 100%;
+    }
+
+    .control-group { display: flex; flex-direction: column; gap: 6px; }
+    .control-group label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888;
+    }
+
+    button {
+      padding: 8px 16px; border: 1px solid #333; border-radius: 8px;
+      background: #1a1a24; color: #e0e0e0; font-size: 13px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    button:hover { background: #252532; border-color: #555; }
+    button.active { background: #3b3bf0; border-color: #5555ff; color: #fff; }
+
+    select {
+      padding: 8px 12px; border: 1px solid #333; border-radius: 8px;
+      background: #1a1a24; color: #e0e0e0; font-size: 13px;
+      cursor: pointer; min-width: 140px; max-width: 220px;
+    }
+    select:focus { outline: none; border-color: #5555ff; }
+
+    input[type="range"] { width: 120px; accent-color: #5555ff; }
+    input[type="color"] {
+      width: 36px; height: 36px; border: none; border-radius: 6px;
+      cursor: pointer; background: none;
+    }
+
+    #status { padding: 12px; text-align: center; font-size: 14px; color: #888; }
+
+    .bg-preset {
+      width: 64px; height: 36px; border-radius: 4px; cursor: pointer;
+      border: 2px solid transparent; transition: border-color 0.15s;
+    }
+    .bg-preset:hover { border-color: #555; }
+    .bg-preset.active { border-color: #5555ff; }
+  </style>
+
+  <!--
+    Import map: resolve bare specifiers without a bundler.
+    "segmo" points to the compiled dist/ — the REAL package with
+    full WebGL2 pipeline, all 7 shader stages, adaptive quality, etc.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "segmo": "../dist/index.js",
+      "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/+esm"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>segmo</h1>
+    <p>Full WebGL2 pipeline — temporal smoothing · morphology · bilateral upsample · edge feather · light wrap</p>
+  </header>
+
+  <div id="status">Select a camera and click "Start"</div>
+
+  <div class="container">
+    <div class="video-panel">
+      <canvas id="outputCanvas" width="640" height="360"></canvas>
+      <span class="video-label">segmo Pipeline</span>
+      <div class="stats" id="stats"></div>
+      <div class="badge" id="qualityBadge">auto</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control-group">
+      <label>Camera</label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <select id="cameraSelect"><option value="">Loading…</option></select>
+        <button id="btnStart">Start</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Background</label>
+      <div style="display:flex;gap:6px;">
+        <button id="btnBlur" class="active">Blur</button>
+        <button id="btnColor">Color</button>
+        <button id="btnImage">Image</button>
+        <button id="btnNone">None</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Blur</label>
+      <input type="range" id="blurRadius" min="2" max="30" value="14" />
+    </div>
+
+    <div class="control-group">
+      <label>Color</label>
+      <input type="color" id="bgColor" value="#1a1a2e" />
+    </div>
+
+    <div class="control-group">
+      <label>Quality</label>
+      <div style="display:flex;gap:6px;">
+        <button id="btnAuto" class="active">Auto</button>
+        <button id="btnLow">Low</button>
+        <button id="btnMedium">Med</button>
+        <button id="btnHigh">High</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Auto-Frame</label>
+      <button id="btnAutoFrame">Off</button>
+    </div>
+  </div>
+
+  <div class="controls" id="imagePanel" style="display:none;">
+    <div class="control-group">
+      <label>Upload</label>
+      <button id="btnUpload" style="position:relative;overflow:hidden;">
+        Choose File
+        <input type="file" id="fileInput" accept="image/*"
+          style="position:absolute;inset:0;opacity:0;cursor:pointer;" />
+      </button>
+    </div>
+    <div class="control-group">
+      <label>Presets</label>
+      <div style="display:flex;gap:6px;" id="presetContainer"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    // ================================================================
+    // Import the REAL compiled segmo package from dist/
+    // This runs: MediaPipe model → temporal smooth → morphological
+    // closing → bilateral upsample → edge feather → GPU blur →
+    // composite → light wrap — all in WebGL2 shaders.
+    // ================================================================
+    import { SegmentationProcessor } from 'segmo';
+
+    let processor = null;
+    let stream = null;
+    let srcVideo = null;
+    let running = false;
+    let animId = null;
+    let autoMode = true;
+
+    const outputCanvas = document.getElementById('outputCanvas');
+    const statsEl      = document.getElementById('stats');
+    const statusEl     = document.getElementById('status');
+    const qualityBadge = document.getElementById('qualityBadge');
+    const cameraSelect = document.getElementById('cameraSelect');
+
+    // --- Camera enumeration ---
+    async function enumerateCameras() {
+      try {
+        const temp = await navigator.mediaDevices.getUserMedia({ video: true });
+        temp.getTracks().forEach(t => t.stop());
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cameras = devices.filter(d => d.kind === 'videoinput');
+        cameraSelect.innerHTML = '';
+        cameras.forEach((cam, i) => {
+          const opt = document.createElement('option');
+          opt.value = cam.deviceId;
+          opt.textContent = cam.label || `Camera ${i + 1}`;
+          cameraSelect.appendChild(opt);
+        });
+        if (!cameras.length) cameraSelect.innerHTML = '<option>No cameras</option>';
+      } catch (e) {
+        cameraSelect.innerHTML = '<option>Permission denied</option>';
+      }
+    }
+    enumerateCameras();
+    navigator.mediaDevices.addEventListener('devicechange', enumerateCameras);
+    cameraSelect.addEventListener('change', async () => { if (running) { await stop(); await start(); } });
+
+    // --- Start / Stop ---
+    async function start() {
+      statusEl.textContent = 'Starting camera & loading model...';
+
+      const deviceId = cameraSelect.value;
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 },
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        },
+      });
+
+      srcVideo = document.createElement('video');
+      srcVideo.srcObject = stream;
+      srcVideo.muted = true;
+      srcVideo.playsInline = true;
+      await srcVideo.play();
+
+      const w = srcVideo.videoWidth || 640;
+      const h = srcVideo.videoHeight || 360;
+      outputCanvas.width = w;
+      outputCanvas.height = h;
+
+      const activeTrack = stream.getVideoTracks()[0];
+      if (activeTrack.getSettings().deviceId) cameraSelect.value = activeTrack.getSettings().deviceId;
+
+      // Create processor on first run
+      if (!processor) {
+        processor = new SegmentationProcessor({
+          backgroundMode: 'blur',
+          blurRadius: parseInt(document.getElementById('blurRadius').value),
+          quality: 'medium',
+          adaptive: true,
+        });
+      }
+
+      // init() loads the MediaPipe model and creates the WebGL2 pipeline
+      await processor.init(w, h);
+
+      statusEl.textContent = '';
+      running = true;
+      loop();
+    }
+
+    async function stop() {
+      running = false;
+      if (animId) cancelAnimationFrame(animId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (srcVideo) { srcVideo.pause(); srcVideo.srcObject = null; }
+    }
+
+    // --- Render loop (matched to model FPS) ---
+    // Rendering at model FPS = every frame gets a fresh mask = zero trailing.
+    // Use rAF skip pattern: render every other frame = 30fps from 60fps rAF.
+    let fpsFrames = 0, fpsTime = performance.now(), fps = 0;
+    let frameSkip = false;
+
+    function loop() {
+      if (!running) return;
+      // Skip every other rAF tick → 30fps from 60fps display
+      frameSkip = !frameSkip;
+      if (frameSkip) {
+        animId = requestAnimationFrame(loop);
+        return;
+      }
+      const t0 = performance.now();
+
+      // processFrame runs the FULL pipeline:
+      //   1. Downsample → MediaPipe inference (CPU, WASM+SIMD)
+      //   2. Motion map computation
+      //   3. Temporal smoothing (motion-aware hysteresis)
+      //   4. Morphological closing (dilate → erode)
+      //   5. Joint bilateral upsample (RGB-guided)
+      //   6. Edge feathering (selective boundary blur)
+      //   7. Background blur (separable GPU Gaussian, half-res)
+      //   8. Composite (fg*mask + bg*(1-mask))
+      //   9. Light wrapping (BG light spill on edges)
+      // All in WebGL2 shaders — zero CPU pixel pushing.
+      const output = processor.processFrame(srcVideo, t0);
+
+      if (output) {
+        const ctx = outputCanvas.getContext('2d');
+        ctx.drawImage(output, 0, 0);
+
+        // Debug: draw model ROI crop rectangle (green)
+        const modelCrop = processor.getModelCropRegion();
+        if (modelCrop) {
+          const af = processor.getCropRect();
+          let rx, ry, rw, rh;
+          if (af && af.zoom > 1.02) {
+            rx = (modelCrop.x - af.x) / af.width * outputCanvas.width;
+            ry = (modelCrop.y - af.y) / af.height * outputCanvas.height;
+            rw = modelCrop.w / af.width * outputCanvas.width;
+            rh = modelCrop.h / af.height * outputCanvas.height;
+          } else {
+            rx = modelCrop.x * outputCanvas.width;
+            ry = modelCrop.y * outputCanvas.height;
+            rw = modelCrop.w * outputCanvas.width;
+            rh = modelCrop.h * outputCanvas.height;
+          }
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(rx, ry, rw, rh);
+        }
+      }
+
+      // Stats
+      fpsFrames++;
+      if (t0 - fpsTime >= 1000) {
+        fps = fpsFrames; fpsFrames = 0; fpsTime = t0;
+      }
+      const m = processor.getMetrics();
+      const frameMs = performance.now() - t0;
+      const ac = processor.getAdaptiveController();
+      const tierLabel = autoMode && ac ? ac.getCurrentLevel().label : qualityBadge.textContent;
+      // Update badge when in auto mode
+      if (autoMode && ac) qualityBadge.textContent = `auto: ${ac.getCurrentLevel().label}`;
+      statsEl.textContent =
+        `FPS: ${fps} | Model: ${m.modelFps}fps @ ${m.modelInferenceMs.toFixed(1)}ms\n` +
+        `Pipeline: ${m.pipelineMs.toFixed(1)}ms | Frame: ${frameMs.toFixed(1)}ms` +
+        ` | Quality: ${tierLabel}`;
+
+      animId = requestAnimationFrame(loop);
+    }
+
+    // --- UI wiring ---
+    document.getElementById('btnStart').addEventListener('click', async () => {
+      const btn = document.getElementById('btnStart');
+      btn.disabled = true; btn.textContent = 'Loading...';
+      try {
+        if (running) await stop();
+        await enumerateCameras();
+        await start();
+      } catch (e) {
+        statusEl.textContent = `Error: ${e.message}`;
+        console.error(e);
+      }
+      btn.disabled = false; btn.textContent = 'Restart';
+    });
+
+    function setActive(ids, id) {
+      ids.forEach(i => document.getElementById(i).classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+    }
+
+    const bgBtns = ['btnBlur', 'btnColor', 'btnImage', 'btnNone'];
+
+    document.getElementById('btnBlur').addEventListener('click', () => {
+      if (processor) processor.setBackgroundMode('blur');
+      setActive(bgBtns, 'btnBlur');
+      document.getElementById('imagePanel').style.display = 'none';
+    });
+    document.getElementById('btnColor').addEventListener('click', () => {
+      if (processor) {
+        processor.setBackgroundMode('color');
+        processor.setBackgroundColor(document.getElementById('bgColor').value);
+      }
+      setActive(bgBtns, 'btnColor');
+      document.getElementById('imagePanel').style.display = 'none';
+    });
+    document.getElementById('btnImage').addEventListener('click', () => {
+      if (processor) processor.setBackgroundMode('image');
+      setActive(bgBtns, 'btnImage');
+      document.getElementById('imagePanel').style.display = 'flex';
+    });
+    document.getElementById('btnNone').addEventListener('click', () => {
+      if (processor) processor.setBackgroundMode('none');
+      setActive(bgBtns, 'btnNone');
+      document.getElementById('imagePanel').style.display = 'none';
+    });
+
+    document.getElementById('blurRadius').addEventListener('input', e => {
+      if (processor) processor.setBlurRadius(parseInt(e.target.value));
+    });
+    document.getElementById('bgColor').addEventListener('input', e => {
+      if (processor) processor.setBackgroundColor(e.target.value);
+    });
+
+    const qualBtns = ['btnAuto', 'btnLow', 'btnMedium', 'btnHigh'];
+    document.getElementById('btnAuto').addEventListener('click', () => {
+      autoMode = true;
+      if (processor) {
+        const ac = processor.getAdaptiveController();
+        if (ac) { ac.unlock(); qualityBadge.textContent = `auto: ${ac.getCurrentLevel().label}`; }
+      }
+      setActive(qualBtns, 'btnAuto');
+    });
+    document.getElementById('btnLow').addEventListener('click', () => {
+      autoMode = false;
+      if (processor) { processor.setQuality('low'); processor.getAdaptiveController()?.lock(); }
+      qualityBadge.textContent = 'low'; setActive(qualBtns, 'btnLow');
+    });
+    document.getElementById('btnMedium').addEventListener('click', () => {
+      autoMode = false;
+      if (processor) { processor.setQuality('medium'); processor.getAdaptiveController()?.lock(); }
+      qualityBadge.textContent = 'medium'; setActive(qualBtns, 'btnMedium');
+    });
+    document.getElementById('btnHigh').addEventListener('click', () => {
+      autoMode = false;
+      if (processor) { processor.setQuality('high'); processor.getAdaptiveController()?.lock(); }
+      qualityBadge.textContent = 'high'; setActive(qualBtns, 'btnHigh');
+    });
+
+    document.getElementById('btnAutoFrame').addEventListener('click', () => {
+      const btn = document.getElementById('btnAutoFrame');
+      const on = btn.textContent === 'Off';
+      if (processor) processor.setAutoFrame(on, true); // continuous tracking
+      btn.textContent = on ? 'On' : 'Off';
+      btn.classList.toggle('active', on);
+    });
+
+    // --- Background image presets (generated, no external files) ---
+    const presetDefs = [
+      { name: 'Sunset', fn: (c,w,h) => {
+        const g = c.createLinearGradient(0,0,0,h);
+        g.addColorStop(0,'#1a0533'); g.addColorStop(0.3,'#4a1942');
+        g.addColorStop(0.5,'#c2185b'); g.addColorStop(0.7,'#ff6f00');
+        g.addColorStop(1,'#ffab00');
+        c.fillStyle = g; c.fillRect(0,0,w,h);
+        c.beginPath(); c.arc(w*0.7,h*0.55,w*0.06,0,Math.PI*2);
+        c.fillStyle = '#fff3e0'; c.fill();
+      }},
+      { name: 'Ocean', fn: (c,w,h) => {
+        const g = c.createLinearGradient(0,0,0,h);
+        g.addColorStop(0,'#0d47a1'); g.addColorStop(0.4,'#1565c0');
+        g.addColorStop(0.6,'#1e88e5'); g.addColorStop(0.8,'#90caf9');
+        g.addColorStop(1,'#e3f2fd');
+        c.fillStyle = g; c.fillRect(0,0,w,h);
+      }},
+      { name: 'Forest', fn: (c,w,h) => {
+        const g = c.createLinearGradient(0,0,0,h);
+        g.addColorStop(0,'#1b3a1b'); g.addColorStop(0.3,'#2e5c2e');
+        g.addColorStop(0.6,'#4caf50'); g.addColorStop(0.8,'#81c784');
+        g.addColorStop(1,'#3e2723');
+        c.fillStyle = g; c.fillRect(0,0,w,h);
+        for (let i=0; i<10; i++) {
+          const x = w*(0.05+i*0.1), th = h*(0.3+Math.random()*0.2);
+          c.fillStyle = '#1b5e20'; c.beginPath(); c.moveTo(x,h*0.7);
+          c.lineTo(x-w*0.03,h*0.7); c.lineTo(x-w*0.015,h*0.7-th);
+          c.closePath(); c.fill();
+        }
+      }},
+      { name: 'Night', fn: (c,w,h) => {
+        const g = c.createLinearGradient(0,0,0,h);
+        g.addColorStop(0,'#0a0a1a'); g.addColorStop(0.6,'#1a1a3e');
+        g.addColorStop(1,'#2a2a4e');
+        c.fillStyle = g; c.fillRect(0,0,w,h);
+        for (let i=0; i<50; i++) {
+          c.fillStyle = `rgba(255,255,255,${0.3+Math.random()*0.7})`;
+          c.fillRect(Math.random()*w, Math.random()*h*0.6, 1.5, 1.5);
+        }
+        c.fillStyle = '#111128';
+        for (let i=0; i<14; i++) {
+          const bx = w*i/14, bh = h*(0.15+Math.random()*0.35), bw = w/14-2;
+          c.fillRect(bx, h-bh, bw, bh);
+          c.fillStyle = '#ffeb3b44';
+          for (let wy=h-bh+4; wy<h-4; wy+=8)
+            for (let wx=bx+3; wx<bx+bw-3; wx+=6)
+              if (Math.random()>0.4) c.fillRect(wx,wy,3,4);
+          c.fillStyle = '#111128';
+        }
+      }},
+      { name: 'Office', fn: (c,w,h) => {
+        const g = c.createLinearGradient(0,0,w,h);
+        g.addColorStop(0,'#37474f'); g.addColorStop(0.5,'#455a64');
+        g.addColorStop(1,'#546e7a');
+        c.fillStyle = g; c.fillRect(0,0,w,h);
+        c.strokeStyle = '#60707866'; c.lineWidth = 1;
+        for (let y=h*0.2; y<h*0.85; y+=h*0.15) {
+          c.beginPath(); c.moveTo(w*0.15,y); c.lineTo(w*0.85,y); c.stroke();
+        }
+      }},
+    ];
+
+    const presetEl = document.getElementById('presetContainer');
+    presetDefs.forEach(p => {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 36; c.className = 'bg-preset'; c.title = p.name;
+      p.fn(c.getContext('2d'), 64, 36);
+      c.addEventListener('click', () => {
+        const full = document.createElement('canvas');
+        full.width = 1280; full.height = 720;
+        p.fn(full.getContext('2d'), 1280, 720);
+        const img = new Image();
+        img.onload = () => {
+          if (processor) { processor.setBackgroundImage(img); processor.setBackgroundMode('image'); }
+          setActive(bgBtns, 'btnImage');
+          document.getElementById('imagePanel').style.display = 'flex';
+        };
+        img.src = full.toDataURL();
+        presetEl.querySelectorAll('.bg-preset').forEach(el => el.classList.remove('active'));
+        c.classList.add('active');
+      });
+      presetEl.appendChild(c);
+    });
+
+    document.getElementById('fileInput').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          if (processor) { processor.setBackgroundImage(img); processor.setBackgroundMode('image'); }
+          setActive(bgBtns, 'btnImage');
+          presetEl.querySelectorAll('.bg-preset').forEach(el => el.classList.remove('active'));
+          document.getElementById('btnUpload').textContent = file.name.slice(0, 16);
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  </script>
+</body>
+</html>

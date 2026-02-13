@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>segmo — LiveKit Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header { padding: 24px; text-align: center; }
+    header h1 {
+      font-size: 28px; font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    header p { color: #888; margin-top: 4px; font-size: 14px; }
+
+    .connection-form {
+      display: flex; gap: 12px; padding: 16px 24px;
+      background: #13131a; border-radius: 12px;
+      margin-bottom: 16px; flex-wrap: wrap;
+      align-items: flex-end; max-width: 800px; width: 100%;
+    }
+
+    .form-field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 200px; }
+    .form-field label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; }
+    .form-field input {
+      padding: 8px 12px; border: 1px solid #333; border-radius: 8px;
+      background: #1a1a24; color: #e0e0e0; font-size: 13px;
+    }
+    .form-field input:focus { outline: none; border-color: #5555ff; }
+
+    .video-grid {
+      display: flex; gap: 16px; padding: 0 24px;
+      flex-wrap: wrap; justify-content: center; max-width: 1200px; width: 100%;
+    }
+
+    .video-tile {
+      position: relative; border-radius: 12px; overflow: hidden;
+      background: #111; box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      min-width: 320px; flex: 1; max-width: 640px;
+    }
+
+    .video-tile video {
+      display: block; width: 100%; aspect-ratio: 16/9;
+      object-fit: cover; background: #000;
+    }
+
+    .tile-label {
+      position: absolute; top: 10px; left: 10px;
+      background: rgba(0,0,0,0.6); backdrop-filter: blur(8px);
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 12px; font-weight: 600; color: #fff;
+    }
+
+    .tile-stats {
+      position: absolute; bottom: 10px; left: 10px;
+      background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+      padding: 6px 10px; border-radius: 6px;
+      font-size: 11px; font-family: monospace; color: #8f8; white-space: pre;
+    }
+
+    .tile-quality {
+      position: absolute; top: 10px; right: 10px;
+      background: rgba(59,59,240,0.7); backdrop-filter: blur(8px);
+      padding: 4px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 700; color: #fff; text-transform: uppercase;
+    }
+
+    .controls {
+      display: flex; gap: 12px; padding: 16px 24px; margin-top: 16px;
+      background: #13131a; border-radius: 12px;
+      flex-wrap: wrap; justify-content: center; max-width: 800px; width: 100%;
+    }
+
+    .control-group { display: flex; flex-direction: column; gap: 6px; }
+    .control-group label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; }
+
+    button {
+      padding: 8px 16px; border: 1px solid #333; border-radius: 8px;
+      background: #1a1a24; color: #e0e0e0; font-size: 13px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    button:hover { background: #252532; border-color: #555; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.active { background: #3b3bf0; border-color: #5555ff; color: #fff; }
+    button.danger { background: #991b1b; border-color: #dc2626; }
+
+    input[type="range"] { width: 120px; accent-color: #5555ff; }
+    input[type="color"] { width: 36px; height: 36px; border: none; border-radius: 6px; cursor: pointer; background: none; }
+
+    #status { padding: 12px; text-align: center; font-size: 14px; color: #888; }
+
+    .code-note {
+      max-width: 800px; width: 100%; margin: 16px 24px;
+      background: #13131a; border: 1px solid #222; border-radius: 12px;
+      padding: 16px 20px;
+    }
+    .code-note h3 { font-size: 14px; color: #aaa; margin-bottom: 8px; }
+    .code-note pre {
+      background: #0a0a0f; border-radius: 8px; padding: 12px;
+      font-size: 12px; overflow-x: auto; color: #a5d6ff;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>segmo + LiveKit</h1>
+    <p>Background segmentation integrated with LiveKit video conferencing</p>
+  </header>
+
+  <div class="connection-form" id="connectionForm">
+    <div class="form-field">
+      <label>LiveKit Server URL</label>
+      <input type="text" id="serverUrl" placeholder="wss://your-server.livekit.cloud" />
+    </div>
+    <div class="form-field">
+      <label>Access Token</label>
+      <input type="text" id="token" placeholder="Your LiveKit token" />
+    </div>
+    <div class="control-group">
+      <label>&nbsp;</label>
+      <button id="btnConnect">Connect</button>
+    </div>
+  </div>
+
+  <div id="status">Enter your LiveKit server URL and token, or use the local preview below</div>
+
+  <div class="video-grid">
+    <div class="video-tile">
+      <video id="localVideo" autoplay playsinline muted></video>
+      <span class="tile-label">You (local)</span>
+      <div class="tile-stats" id="localStats"></div>
+      <div class="tile-quality" id="localQuality">medium</div>
+    </div>
+    <div class="video-tile" id="remoteContainer" style="display:none;">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <span class="tile-label" id="remoteLabel">Remote</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control-group">
+      <label>Preview</label>
+      <button id="btnPreview">Local Preview</button>
+    </div>
+
+    <div class="control-group">
+      <label>Background</label>
+      <div style="display:flex;gap:6px;">
+        <button id="btnBlur" class="active">Blur</button>
+        <button id="btnColor">Color</button>
+        <button id="btnNone">None</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Blur</label>
+      <input type="range" id="blurRadius" min="4" max="24" value="12" />
+    </div>
+
+    <div class="control-group">
+      <label>Color</label>
+      <input type="color" id="bgColor" value="#1a1a2e" />
+    </div>
+
+    <div class="control-group">
+      <label>Quality</label>
+      <div style="display:flex;gap:6px;">
+        <button id="btnLow">Low</button>
+        <button id="btnMed" class="active">Med</button>
+        <button id="btnHigh">High</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>&nbsp;</label>
+      <button id="btnDisconnect" class="danger" disabled>Disconnect</button>
+    </div>
+  </div>
+
+  <div class="code-note">
+    <h3>Integration Code (TypeScript)</h3>
+    <pre><code>import { SegmentationProcessor } from 'segmo';
+import { Room, createLocalVideoTrack } from 'livekit-client';
+
+// 1. Create processor
+const processor = new SegmentationProcessor({
+  backgroundMode: 'blur',
+  quality: 'medium',
+  adaptive: true,
+});
+
+// 2. Create & process video track
+const track = await createLocalVideoTrack({
+  resolution: { width: 1280, height: 720, frameRate: 30 },
+});
+await track.setProcessor(processor.toLiveKitProcessor());
+
+// 3. Connect to room & publish
+const room = new Room();
+await room.connect(serverUrl, token);
+await room.localParticipant.publishTrack(track);
+
+// 4. Runtime controls
+processor.setBackgroundMode('blur');
+processor.setBlurRadius(14);
+processor.setBackgroundColor('#1a1a2e');
+
+// 5. Clean up
+processor.destroy();
+await room.disconnect();</code></pre>
+  </div>
+
+  <!--
+    This demo uses CDN imports for simplicity.
+    In production, install segmo and livekit-client via npm.
+  -->
+  <script type="module">
+    import {
+      ImageSegmenter,
+      FilesetResolver,
+    } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/+esm';
+
+    // We dynamically import LiveKit only when connecting
+    let LiveKit = null;
+
+    // --- State ---
+    let segmenter = null;
+    let room = null;
+    let localStream = null;
+    let localTrack = null;
+    let running = false;
+    let animId = null;
+
+    let bgMode = 'blur';
+    let bgColor = '#1a1a2e';
+    let blurRadius = 12;
+    let quality = 'medium';
+
+    const PRESETS = {
+      low:    { modelFps: 10, modelW: 160, modelH: 160, appear: 0.85, disappear: 0.45 },
+      medium: { modelFps: 15, modelW: 256, modelH: 256, appear: 0.75, disappear: 0.35 },
+      high:   { modelFps: 30, modelW: 256, modelH: 256, appear: 0.70, disappear: 0.30 },
+    };
+    let preset = PRESETS[quality];
+
+    let lastMask = null;
+    let prevSmoothed = null;
+    let prevRaw = null;
+    let lastModelTime = 0;
+    let frameCount = 0;
+    let fpsFrames = 0;
+    let fpsTime = performance.now();
+    let currentFps = 0;
+    let modelFpsCount = 0;
+    let modelFramesCount = 0;
+    let lastFrameTimeMs = 0;
+
+    // DOM
+    const localVideo  = document.getElementById('localVideo');
+    const localStats  = document.getElementById('localStats');
+    const localQual   = document.getElementById('localQuality');
+    const statusEl    = document.getElementById('status');
+
+    // Offscreen processing
+    let modelCanvas, modelCtx, blurCanvas, blurCtx;
+    let outputCanvas, outputCtx;
+    let outputStream;
+
+    // --- Model ---
+    async function initModel() {
+      if (segmenter) return;
+      statusEl.textContent = 'Loading segmentation model...';
+
+      const vision = await FilesetResolver.forVisionTasks(
+        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm',
+      );
+
+      segmenter = await ImageSegmenter.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite',
+          delegate: 'CPU',
+        },
+        runningMode: 'VIDEO',
+        outputCategoryMask: false,
+        outputConfidenceMasks: true,
+      });
+
+      statusEl.textContent = 'Model ready.';
+    }
+
+    // --- Local Preview (no LiveKit) ---
+    async function startLocalPreview() {
+      await initModel();
+      statusEl.textContent = 'Starting camera...';
+
+      localStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720, frameRate: 30 },
+      });
+
+      // Hidden source video
+      const srcVideo = document.createElement('video');
+      srcVideo.srcObject = localStream;
+      srcVideo.muted = true;
+      srcVideo.playsInline = true;
+      await srcVideo.play();
+
+      const w = srcVideo.videoWidth || 640;
+      const h = srcVideo.videoHeight || 360;
+
+      outputCanvas = new OffscreenCanvas(w, h);
+      outputCtx = outputCanvas.getContext('2d');
+
+      modelCanvas = new OffscreenCanvas(preset.modelW, preset.modelH);
+      modelCtx = modelCanvas.getContext('2d');
+      blurCanvas = new OffscreenCanvas(w >> 1, h >> 1);
+      blurCtx = blurCanvas.getContext('2d');
+
+      // Create output stream from canvas
+      const displayCanvas = document.createElement('canvas');
+      displayCanvas.width = w;
+      displayCanvas.height = h;
+      const displayCtx = displayCanvas.getContext('2d');
+
+      running = true;
+      statusEl.textContent = '';
+      let frameSkip = false;
+
+      function loop() {
+        if (!running) return;
+        frameSkip = !frameSkip;
+        if (frameSkip) {
+          animId = requestAnimationFrame(loop);
+          return;
+        }
+        const t0 = performance.now();
+        const now = t0;
+
+        // Run model?
+        const interval = 1000 / preset.modelFps;
+        if ((now - lastModelTime) >= interval && segmenter) {
+          modelCanvas.width = preset.modelW;
+          modelCanvas.height = preset.modelH;
+          modelCtx.drawImage(srcVideo, 0, 0, preset.modelW, preset.modelH);
+
+          try {
+            const result = segmenter.segmentForVideo(modelCanvas, now);
+            if (result.confidenceMasks?.length > 0) {
+              const raw = result.confidenceMasks[0].getAsFloat32Array();
+
+              if (!prevRaw || prevRaw.length !== raw.length) prevRaw = new Float32Array(raw.length);
+              if (lastMask) prevRaw.set(lastMask);
+
+              if (!prevSmoothed || prevSmoothed.length !== raw.length) {
+                prevSmoothed = new Float32Array(raw.length);
+                prevSmoothed.set(raw);
+              }
+              if (!lastMask) lastMask = new Float32Array(raw.length);
+
+              for (let i = 0; i < raw.length; i++) {
+                const v = raw[i];
+                const soft = v < 0.35 ? 0 : v > 0.65 ? 1 : (v - 0.35) / 0.3;
+                const motion = lastMask ? Math.abs(raw[i] - prevRaw[i]) : 0;
+                const mf = Math.min(1, motion * 3);
+                const aR = preset.appear + (0.95 - preset.appear) * mf;
+                const dR = preset.disappear + (0.7 - preset.disappear) * mf;
+                const prev = prevSmoothed[i];
+                const alpha = soft > prev ? aR : dR;
+                lastMask[i] = prev + (soft - prev) * alpha;
+              }
+              prevSmoothed.set(lastMask);
+              result.confidenceMasks[0].close();
+            }
+          } catch(e) {}
+          lastModelTime = now;
+          modelFramesCount++;
+        }
+
+        // Composite
+        if (lastMask && bgMode !== 'none') {
+          compositeFrame(outputCtx, srcVideo, w, h);
+        } else {
+          outputCtx.drawImage(srcVideo, 0, 0, w, h);
+        }
+
+        // Draw to display
+        displayCtx.drawImage(outputCanvas, 0, 0);
+
+        // Stats
+        frameCount++; fpsFrames++;
+        if (now - fpsTime >= 1000) {
+          currentFps = fpsFrames;
+          modelFpsCount = modelFramesCount;
+          fpsFrames = 0; modelFramesCount = 0;
+          fpsTime = now;
+        }
+        lastFrameTimeMs = performance.now() - t0;
+
+        if (frameCount % 3 === 0) {
+          localStats.textContent = `FPS: ${currentFps} | Model: ${modelFpsCount}fps\nFrame: ${lastFrameTimeMs.toFixed(1)}ms`;
+        }
+
+        animId = requestAnimationFrame(loop);
+      }
+
+      // Attach display canvas to video element via captureStream
+      const outStream = displayCanvas.captureStream(30);
+      localVideo.srcObject = outStream;
+      await localVideo.play();
+
+      loop();
+    }
+
+    function compositeFrame(ctx, video, w, h) {
+      ctx.drawImage(video, 0, 0, w, h);
+      const fgData = ctx.getImageData(0, 0, w, h);
+
+      let bgData;
+      if (bgMode === 'blur') {
+        blurCtx.filter = `blur(${blurRadius}px)`;
+        blurCtx.drawImage(video, 0, 0, blurCanvas.width, blurCanvas.height);
+        blurCtx.filter = 'none';
+        ctx.drawImage(blurCanvas, 0, 0, w, h);
+        bgData = ctx.getImageData(0, 0, w, h);
+      } else if (bgMode === 'color') {
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(0, 0, w, h);
+        bgData = ctx.getImageData(0, 0, w, h);
+      }
+
+      if (!bgData) { ctx.putImageData(fgData, 0, 0); return; }
+
+      const mw = preset.modelW, mh = preset.modelH;
+      const fg = fgData.data, bg = bgData.data;
+      const out = ctx.createImageData(w, h);
+      const od = out.data;
+
+      for (let y = 0; y < h; y++) {
+        const my = ((y / h) * (mh - 1)) | 0;
+        for (let x = 0; x < w; x++) {
+          const mx = ((x / w) * (mw - 1)) | 0;
+          const a = lastMask[my * mw + mx];
+          const pi = (y * w + x) * 4;
+          od[pi]     = fg[pi]     * a + bg[pi]     * (1 - a);
+          od[pi + 1] = fg[pi + 1] * a + bg[pi + 1] * (1 - a);
+          od[pi + 2] = fg[pi + 2] * a + bg[pi + 2] * (1 - a);
+          od[pi + 3] = 255;
+        }
+      }
+      ctx.putImageData(out, 0, 0);
+    }
+
+    // --- LiveKit Connection ---
+    async function connectToRoom() {
+      const url = document.getElementById('serverUrl').value.trim();
+      const token = document.getElementById('token').value.trim();
+      if (!url || !token) {
+        statusEl.textContent = 'Please enter server URL and token.';
+        return;
+      }
+
+      statusEl.textContent = 'Loading LiveKit SDK...';
+
+      // Dynamic import LiveKit from CDN
+      if (!LiveKit) {
+        LiveKit = await import('https://cdn.jsdelivr.net/npm/livekit-client@2.5.7/+esm');
+      }
+
+      await initModel();
+      statusEl.textContent = 'Connecting to room...';
+
+      room = new LiveKit.Room();
+
+      // Handle remote tracks
+      room.on(LiveKit.RoomEvent.TrackSubscribed, (track, pub, participant) => {
+        if (track.kind === 'video') {
+          const container = document.getElementById('remoteContainer');
+          const remoteVideo = document.getElementById('remoteVideo');
+          const remoteLabel = document.getElementById('remoteLabel');
+          container.style.display = '';
+          track.attach(remoteVideo);
+          remoteLabel.textContent = participant.identity || 'Remote';
+        }
+      });
+
+      room.on(LiveKit.RoomEvent.TrackUnsubscribed, (track) => {
+        if (track.kind === 'video') {
+          track.detach();
+          document.getElementById('remoteContainer').style.display = 'none';
+        }
+      });
+
+      room.on(LiveKit.RoomEvent.Disconnected, () => {
+        statusEl.textContent = 'Disconnected.';
+        cleanup();
+      });
+
+      await room.connect(url, token);
+      statusEl.textContent = `Connected to room: ${room.name}`;
+
+      // Create & publish local track with processor
+      // NOTE: In production you'd use the actual segmo package:
+      //
+      //   import { SegmentationProcessor } from 'segmo';
+      //   const processor = new SegmentationProcessor({ backgroundMode: 'blur' });
+      //   const track = await LiveKit.createLocalVideoTrack({ ... });
+      //   await track.setProcessor(processor.toLiveKitProcessor());
+      //
+      // For this demo, we use the inline implementation from the local preview:
+      localStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 1280, height: 720, frameRate: 30 },
+      });
+
+      const srcVideo = document.createElement('video');
+      srcVideo.srcObject = localStream;
+      srcVideo.muted = true;
+      srcVideo.playsInline = true;
+      await srcVideo.play();
+
+      const w = srcVideo.videoWidth || 640;
+      const h = srcVideo.videoHeight || 360;
+
+      outputCanvas = new OffscreenCanvas(w, h);
+      outputCtx = outputCanvas.getContext('2d');
+      modelCanvas = new OffscreenCanvas(preset.modelW, preset.modelH);
+      modelCtx = modelCanvas.getContext('2d');
+      blurCanvas = new OffscreenCanvas(w >> 1, h >> 1);
+      blurCtx = blurCanvas.getContext('2d');
+
+      const displayCanvas = document.createElement('canvas');
+      displayCanvas.width = w;
+      displayCanvas.height = h;
+      const displayCtx = displayCanvas.getContext('2d');
+
+      running = true;
+      let roomFrameSkip = false;
+
+      function loop() {
+        if (!running) return;
+        // Skip every other rAF tick → 30fps from 60fps display
+        roomFrameSkip = !roomFrameSkip;
+        if (roomFrameSkip) {
+          animId = requestAnimationFrame(loop);
+          return;
+        }
+        const t0 = performance.now();
+        const now = t0;
+        const interval = 1000 / preset.modelFps;
+
+        if ((now - lastModelTime) >= interval && segmenter) {
+          modelCanvas.width = preset.modelW;
+          modelCanvas.height = preset.modelH;
+          modelCtx.drawImage(srcVideo, 0, 0, preset.modelW, preset.modelH);
+          try {
+            const result = segmenter.segmentForVideo(modelCanvas, now);
+            if (result.confidenceMasks?.length > 0) {
+              const raw = result.confidenceMasks[0].getAsFloat32Array();
+              if (!prevRaw || prevRaw.length !== raw.length) prevRaw = new Float32Array(raw.length);
+              if (lastMask) prevRaw.set(lastMask);
+              if (!prevSmoothed || prevSmoothed.length !== raw.length) {
+                prevSmoothed = new Float32Array(raw.length);
+                prevSmoothed.set(raw);
+              }
+              if (!lastMask) lastMask = new Float32Array(raw.length);
+              for (let i = 0; i < raw.length; i++) {
+                const v = raw[i];
+                const soft = v < 0.35 ? 0 : v > 0.65 ? 1 : (v - 0.35) / 0.3;
+                const prev = prevSmoothed[i];
+                const alpha = soft > prev ? preset.appear : preset.disappear;
+                lastMask[i] = prev + (soft - prev) * alpha;
+              }
+              prevSmoothed.set(lastMask);
+              result.confidenceMasks[0].close();
+            }
+          } catch(e) {}
+          lastModelTime = now;
+          modelFramesCount++;
+        }
+
+        if (lastMask && bgMode !== 'none') compositeFrame(outputCtx, srcVideo, w, h);
+        else outputCtx.drawImage(srcVideo, 0, 0, w, h);
+
+        displayCtx.drawImage(outputCanvas, 0, 0);
+
+        frameCount++; fpsFrames++;
+        if (now - fpsTime >= 1000) {
+          currentFps = fpsFrames; modelFpsCount = modelFramesCount;
+          fpsFrames = 0; modelFramesCount = 0; fpsTime = now;
+        }
+        lastFrameTimeMs = performance.now() - t0;
+        if (frameCount % 3 === 0)
+          localStats.textContent = `FPS: ${currentFps} | Model: ${modelFpsCount}fps\nFrame: ${lastFrameTimeMs.toFixed(1)}ms`;
+
+        animId = requestAnimationFrame(loop);
+      }
+
+      const outStream = displayCanvas.captureStream(30);
+      localVideo.srcObject = outStream;
+      await localVideo.play();
+
+      // Publish the processed stream to LiveKit
+      const processedTrack = outStream.getVideoTracks()[0];
+      await room.localParticipant.publishTrack(processedTrack, {
+        source: LiveKit.Track.Source.Camera,
+      });
+
+      loop();
+
+      document.getElementById('btnConnect').disabled = true;
+      document.getElementById('btnDisconnect').disabled = false;
+    }
+
+    function cleanup() {
+      running = false;
+      if (animId) cancelAnimationFrame(animId);
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      localVideo.srcObject = null;
+      lastMask = null; prevSmoothed = null; prevRaw = null;
+      document.getElementById('btnConnect').disabled = false;
+      document.getElementById('btnDisconnect').disabled = true;
+    }
+
+    async function disconnect() {
+      if (room) {
+        await room.disconnect();
+        room = null;
+      }
+      cleanup();
+      statusEl.textContent = 'Disconnected.';
+    }
+
+    // --- UI ---
+    document.getElementById('btnPreview').addEventListener('click', async () => {
+      const btn = document.getElementById('btnPreview');
+      btn.disabled = true; btn.textContent = 'Loading...';
+      await startLocalPreview();
+      btn.textContent = 'Restart Preview';
+      btn.disabled = false;
+    });
+
+    document.getElementById('btnConnect').addEventListener('click', async () => {
+      const btn = document.getElementById('btnConnect');
+      btn.disabled = true; btn.textContent = 'Connecting...';
+      try {
+        await connectToRoom();
+      } catch (e) {
+        statusEl.textContent = `Error: ${e.message}`;
+        btn.disabled = false;
+      }
+      btn.textContent = 'Connect';
+    });
+
+    document.getElementById('btnDisconnect').addEventListener('click', disconnect);
+
+    function setActive(ids, activeId) {
+      ids.forEach(id => document.getElementById(id).classList.remove('active'));
+      document.getElementById(activeId).classList.add('active');
+    }
+
+    document.getElementById('btnBlur').addEventListener('click', () => {
+      bgMode = 'blur'; setActive(['btnBlur','btnColor','btnNone'], 'btnBlur');
+    });
+    document.getElementById('btnColor').addEventListener('click', () => {
+      bgMode = 'color'; setActive(['btnBlur','btnColor','btnNone'], 'btnColor');
+    });
+    document.getElementById('btnNone').addEventListener('click', () => {
+      bgMode = 'none'; setActive(['btnBlur','btnColor','btnNone'], 'btnNone');
+    });
+
+    document.getElementById('blurRadius').addEventListener('input', e => blurRadius = +e.target.value);
+    document.getElementById('bgColor').addEventListener('input', e => bgColor = e.target.value);
+
+    document.getElementById('btnLow').addEventListener('click', () => {
+      quality = 'low'; preset = PRESETS.low; localQual.textContent = 'low';
+      setActive(['btnLow','btnMed','btnHigh'], 'btnLow');
+    });
+    document.getElementById('btnMed').addEventListener('click', () => {
+      quality = 'medium'; preset = PRESETS.medium; localQual.textContent = 'medium';
+      setActive(['btnLow','btnMed','btnHigh'], 'btnMed');
+    });
+    document.getElementById('btnHigh').addEventListener('click', () => {
+      quality = 'high'; preset = PRESETS.high; localQual.textContent = 'high';
+      setActive(['btnLow','btnMed','btnHigh'], 'btnHigh');
+    });
+  </script>
+</body>
+</html>

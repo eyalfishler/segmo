@@ -1,0 +1,8 @@
+dist/
+.DS_Store
+*.tsbuildinfo
+firebase-debug.log
+.claude/
+
+node_modules/
+node_modules/*

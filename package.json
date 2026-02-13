@@ -1,0 +1,74 @@
+{
+  "name": "segmo",
+  "version": "0.1.0",
+  "description": "Ultra-optimized background segmentation for web video calls. GPU-accelerated pipeline with ROI cropping, alpha matting, foreground recovery, and adaptive quality. Drop-in for LiveKit, WebRTC, or any MediaStreamTrack.",
+  "author": "Eyal Fishler <eyalfishler@gmail.com>",
+  "license": "MIT",
+  "keywords": [
+    "segmentation",
+    "background-removal",
+    "video-conferencing",
+    "livekit",
+    "mediapipe",
+    "webgl",
+    "virtual-background",
+    "background-blur",
+    "video-matting",
+    "webrtc"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eyalfishler/segmo"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "demo",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.32"
+  },
+  "peerDependencies": {
+    "livekit-client": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "livekit-client": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/dom-webcodecs": "^0.1.11",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
