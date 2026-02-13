@@ -62,6 +62,13 @@ export class SegmentationModel {
   private previousMask: Float32Array | null = null; // For motion detection
   private fullMask: Float32Array | null = null; // Full-frame mask (ROI placed back)
   private lastCropRegion: CropRegion | null = null; // Crop used for last inference
+  private motionBuffer: Float32Array | null = null; // Reused buffer for motion map (avoids GC)
+  // Cached bbox from last segment() call — computed during ROI mapping or mask extraction
+  private cachedBBoxMinX = 0;
+  private cachedBBoxMinY = 0;
+  private cachedBBoxMaxX = 0;
+  private cachedBBoxMaxY = 0;
+  private cachedBBoxFound = false;
 
   constructor(config: ModelConfig = {}) {
     this.config = {
@@ -198,6 +205,8 @@ export class SegmentationModel {
     }
 
     // Map crop-space mask back to full-frame coordinates
+    // Optimized: only iterate within crop bounds (skips 30-50% of pixels)
+    // and compute person bbox during the same pass (eliminates separate 65K scan)
     if (this.lastCropRegion && this.lastMask) {
       const mw = outputWidth;
       const mh = outputHeight;
@@ -209,30 +218,60 @@ export class SegmentationModel {
       this.fullMask.fill(0); // background outside crop
 
       const crop = this.lastCropRegion;
-      // Map each full-frame mask pixel to the crop-space mask
-      // Crop region in mask coordinates
       const cx0 = crop.x * mw;
       const cy0 = crop.y * mh;
       const cw = crop.w * mw;
       const ch = crop.h * mh;
 
-      for (let y = 0; y < mh; y++) {
-        for (let x = 0; x < mw; x++) {
-          // Is this pixel inside the crop region?
-          const nx = (x - cx0) / cw; // normalized position within crop (0-1)
-          const ny = (y - cy0) / ch;
-          if (nx >= 0 && nx < 1 && ny >= 0 && ny < 1) {
-            // Nearest-neighbor lookup in crop mask
-            const sx = Math.min(Math.floor(nx * mw), mw - 1);
-            const sy = Math.min(Math.floor(ny * mh), mh - 1);
-            this.fullMask[y * mw + x] = this.lastMask[sy * mw + sx];
+      // Iterate only within crop bounds (major perf win)
+      const x0 = Math.max(0, Math.floor(cx0));
+      const y0 = Math.max(0, Math.floor(cy0));
+      const x1 = Math.min(mw, Math.ceil(cx0 + cw));
+      const y1 = Math.min(mh, Math.ceil(cy0 + ch));
+
+      // Precompute scale factors — maps full-frame pixel to crop-mask pixel directly
+      // Original: sx = floor((x - cx0) / cw * mw) = floor((x - cx0) * mw / cw)
+      const scaleX = mw / cw; // combines /cw and *mw into one multiply
+      const scaleY = mh / ch;
+      const mwMinus1 = mw - 1;
+      const mhMinus1 = mh - 1;
+
+      // Track bbox during mapping (eliminates separate getPersonBBox scan)
+      let bMinX = mw, bMinY = mh, bMaxX = 0, bMaxY = 0;
+      let bFound = false;
+
+      for (let y = y0; y < y1; y++) {
+        const sy = Math.min(((y - cy0) * scaleY) | 0, mhMinus1);
+        const yOff = y * mw;
+        const syOff = sy * mw;
+
+        for (let x = x0; x < x1; x++) {
+          const sx = Math.min(((x - cx0) * scaleX) | 0, mwMinus1);
+          const val = this.lastMask[syOff + sx];
+          this.fullMask[yOff + x] = val;
+
+          // Track person bbox during same pass
+          if (val > 0.5) {
+            if (x < bMinX) bMinX = x;
+            if (x > bMaxX) bMaxX = x;
+            if (y < bMinY) bMinY = y;
+            if (y > bMaxY) bMaxY = y;
+            bFound = true;
           }
         }
       }
 
+      this.cachedBBoxMinX = bMinX;
+      this.cachedBBoxMinY = bMinY;
+      this.cachedBBoxMaxX = bMaxX;
+      this.cachedBBoxMaxY = bMaxY;
+      this.cachedBBoxFound = bFound;
+
       return this.fullMask;
     }
 
+    // Non-ROI path: compute bbox during mask (already copied above)
+    this.computeBBoxFromMask();
     return this.lastMask;
   }
 
@@ -243,26 +282,52 @@ export class SegmentationModel {
 
   /**
    * Get per-pixel motion estimate between last two masks.
-   * Uses the full-frame mask (after ROI mapping) for consistency.
+   * Reuses internal buffer to avoid allocating 65K floats every frame.
    */
   getMotionMap(): Float32Array | null {
     const current = this.fullMask ?? this.lastMask;
     if (!current || !this.previousMask) return null;
 
-    const motion = new Float32Array(current.length);
-    for (let i = 0; i < current.length; i++) {
-      motion[i] = Math.abs(current[i] - this.previousMask[i]);
+    // Reuse buffer (avoids GC pressure from allocating every frame)
+    if (!this.motionBuffer || this.motionBuffer.length !== current.length) {
+      this.motionBuffer = new Float32Array(current.length);
     }
-    return motion;
+    for (let i = 0; i < current.length; i++) {
+      this.motionBuffer[i] = Math.abs(current[i] - this.previousMask[i]);
+    }
+    return this.motionBuffer;
   }
 
   /**
-   * Compute person bounding box from the last mask.
-   * Returns normalized coordinates (0-1) with padding, or null if no person detected.
+   * Get person bounding box from the last segment() call.
+   * Uses cached bbox computed during ROI mapping or mask extraction —
+   * no additional 65K pixel scan needed.
    */
   getPersonBBox(padding = 0.15): CropRegion | null {
-    const mask = this.fullMask ?? this.lastMask;
-    if (!mask) return null;
+    if (!this.cachedBBoxFound) return null;
+
+    const mw = this.config.outputWidth;
+    const mh = this.config.outputHeight;
+
+    // Normalize cached pixel coords to 0-1 and add padding
+    let nx = this.cachedBBoxMinX / mw - padding;
+    let ny = this.cachedBBoxMinY / mh - padding;
+    let nw = (this.cachedBBoxMaxX - this.cachedBBoxMinX) / mw + padding * 2;
+    let nh = (this.cachedBBoxMaxY - this.cachedBBoxMinY) / mh + padding * 2;
+
+    // Clamp to frame bounds
+    nx = Math.max(0, nx);
+    ny = Math.max(0, ny);
+    nw = Math.min(nw, 1 - nx);
+    nh = Math.min(nh, 1 - ny);
+
+    return { x: nx, y: ny, w: nw, h: nh };
+  }
+
+  /** Compute bbox from lastMask (non-ROI path). Called once per segment(). */
+  private computeBBoxFromMask(): void {
+    const mask = this.lastMask;
+    if (!mask) { this.cachedBBoxFound = false; return; }
 
     const mw = this.config.outputWidth;
     const mh = this.config.outputHeight;
@@ -270,8 +335,9 @@ export class SegmentationModel {
     let found = false;
 
     for (let y = 0; y < mh; y++) {
+      const yOff = y * mw;
       for (let x = 0; x < mw; x++) {
-        if (mask[y * mw + x] > 0.5) {
+        if (mask[yOff + x] > 0.5) {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -281,21 +347,11 @@ export class SegmentationModel {
       }
     }
 
-    if (!found) return null;
-
-    // Normalize to 0-1 and add padding
-    let nx = minX / mw - padding;
-    let ny = minY / mh - padding;
-    let nw = (maxX - minX) / mw + padding * 2;
-    let nh = (maxY - minY) / mh + padding * 2;
-
-    // Clamp to frame bounds
-    nx = Math.max(0, nx);
-    ny = Math.max(0, ny);
-    nw = Math.min(nw, 1 - nx);
-    nh = Math.min(nh, 1 - ny);
-
-    return { x: nx, y: ny, w: nw, h: nh };
+    this.cachedBBoxMinX = minX;
+    this.cachedBBoxMinY = minY;
+    this.cachedBBoxMaxX = maxX;
+    this.cachedBBoxMaxY = maxY;
+    this.cachedBBoxFound = found;
   }
 
   get maskWidth(): number {
@@ -313,7 +369,9 @@ export class SegmentationModel {
     this.lastMask = null;
     this.previousMask = null;
     this.fullMask = null;
+    this.motionBuffer = null;
     this.lastCropRegion = null;
+    this.cachedBBoxFound = false;
   }
 }
 

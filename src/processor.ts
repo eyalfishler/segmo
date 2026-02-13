@@ -30,6 +30,7 @@ import { PostProcessingPipeline, type PipelineOptions } from './pipeline';
 import { SegmentationModel, type ModelConfig } from './model';
 import { AdaptiveQualityController, type AdaptiveConfig, type QualityLevel } from './adaptive';
 import { AutoFramer, type AutoFrameConfig, type CropRect } from './autoframe';
+import { ModelWorkerClient } from './model-worker';
 
 export type BackgroundMode = 'blur' | 'image' | 'color' | 'none';
 
@@ -58,6 +59,8 @@ export interface SegmentationProcessorOptions {
   adaptiveConfig?: AdaptiveConfig;
   /** Auto-framing configuration */
   autoFrame?: AutoFrameConfig;
+  /** Run model inference in a Web Worker (frees main thread, default: false) */
+  useWorker?: boolean;
 }
 
 // Quality presets tuned by hand
@@ -144,6 +147,13 @@ export class SegmentationProcessor {
   // ROI cropping: use previous frame's person bbox to crop next frame's model input
   private personCropRegion: import('./model').CropRegion | null = null;
 
+  // Web Worker for off-main-thread inference
+  private workerClient: ModelWorkerClient | null = null;
+  private workerMask: Float32Array | null = null;
+  private workerMotion: Float32Array | null = null;
+  private workerBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+  private workerHasFreshMask = false;
+
 
   constructor(options: SegmentationProcessorOptions = {}) {
     this.opts = {
@@ -159,6 +169,7 @@ export class SegmentationProcessor {
       adaptive: true,
       adaptiveConfig: {},
       autoFrame: {},
+      useWorker: false,
       ...options,
     };
 
@@ -193,19 +204,35 @@ export class SegmentationProcessor {
    * Can be called during LiveKit track processor init.
    */
   async init(width: number, height: number): Promise<void> {
+    // Clean up previous init (e.g., camera switch triggers re-init)
+    if (this.workerClient) {
+      this.workerClient.destroy();
+      this.workerClient = null;
+    }
+    if (this.pipeline) {
+      this.pipeline.destroy();
+      this.pipeline = null;
+    }
+    if (this.model) {
+      this.model.destroy();
+      this.model = null;
+    }
+
     this.width = width;
     this.height = height;
 
     const preset = this.qualityPreset;
 
-    // Initialize model
+    // Initialize model (skip MediaPipe load when worker handles inference)
     this.model = new SegmentationModel({
       outputWidth: preset.modelWidth,
       outputHeight: preset.modelHeight,
-      delegate: 'CPU', // CPU + WASM + SIMD (matches Google Meet's approach)
+      delegate: 'CPU',
       ...this.opts.modelConfig,
     });
-    await this.model.init();
+    if (!this.opts.useWorker) {
+      await this.model.init();
+    }
 
     // Initialize WebGL pipeline
     this.pipeline = new PostProcessingPipeline({
@@ -250,6 +277,30 @@ export class SegmentationProcessor {
       this.adaptive.setTier(presetToTier[this.opts.quality] ?? 1);
       this.adaptive.unlock(); // Allow auto-adjustment after initial setting
     }
+
+    // Initialize Web Worker for off-main-thread inference (optional)
+    if (this.opts.useWorker) {
+      try {
+        this.workerClient = new ModelWorkerClient({
+          outputWidth: preset.modelWidth,
+          outputHeight: preset.modelHeight,
+          delegate: 'CPU',
+          ...this.opts.modelConfig,
+        });
+        this.workerClient.onMaskReady((result) => {
+          this.workerMask = result.mask;
+          this.workerMotion = result.motion;
+          this.workerBBox = result.bbox;
+          this.workerHasFreshMask = true;
+        });
+        await this.workerClient.init();
+        this.log('Worker initialized — inference runs off main thread');
+      } catch (e) {
+        this.log('Worker init failed, falling back to main thread', { error: String(e) });
+        this.workerClient?.destroy();
+        this.workerClient = null;
+      }
+    }
   }
 
   /**
@@ -275,8 +326,43 @@ export class SegmentationProcessor {
 
     let output: OffscreenCanvas;
 
-    if (shouldRunModel) {
-      // Run model inference with ROI crop from previous frame
+    // --- Worker path: non-blocking inference off main thread ---
+    if (this.workerClient) {
+      // Consume any fresh mask from the worker
+      if (this.workerHasFreshMask && this.workerMask) {
+        this.workerHasFreshMask = false;
+        this.modelFpsCounter++;
+
+        // Update ROI crop from worker's bbox
+        this.updateROICrop(this.workerBBox);
+
+        // Update auto-framing from worker mask
+        this.autoFramer.updateFromMask(
+          this.workerMask,
+          this.model.maskWidth,
+          this.model.maskHeight,
+        );
+
+        // Full pipeline with fresh mask + motion
+        const pipelineStart = performance.now();
+        output = this.pipeline.process(frame, this.workerMask, this.workerMotion);
+        this.metrics.pipelineMs = performance.now() - pipelineStart;
+        this.metrics.modelInferenceMs = 0; // off main thread
+      } else {
+        // No fresh mask yet — interpolate with last mask
+        const pipelineStart = performance.now();
+        output = this.pipeline.processInterpolated(frame);
+        this.metrics.pipelineMs = performance.now() - pipelineStart;
+      }
+
+      // Fire next inference request (non-blocking)
+      if (shouldRunModel) {
+        this.workerClient.requestSegment(frame, timestamp, this.personCropRegion);
+        this.lastModelTime = timestamp;
+      }
+    }
+    // --- Main thread path: blocking inference ---
+    else if (shouldRunModel) {
       const modelStart = performance.now();
       const mask = this.model.segment(
         frame, timestamp,
@@ -289,43 +375,11 @@ export class SegmentationProcessor {
       this.modelFpsCounter++;
 
       if (mask) {
-        // Update ROI crop with dead zone: only update when person moves
-        // significantly. This prevents jitter feedback (noisy mask → jittery crop
-        // → different model input → more noise). When still, crop is perfectly stable.
-        // Scale ROI padding with auto-frame zoom: more zoom = more padding
-        // to give the model sufficient context around the smaller person.
+        // Update ROI crop from model's cached bbox
         const afZoom = this.autoFramer.getCurrentCrop().zoom;
         const roiPadding = afZoom > 1.02 ? 0.05 * afZoom : 0.05;
         const rawBBox = this.model.getPersonBBox(roiPadding);
-        if (rawBBox) {
-          if (this.personCropRegion) {
-            // Split dead zone: strict for position (prevents jitter), lenient for size
-            // (tracks distance changes). Position jitter causes feedback loops;
-            // size changes from distance are legitimate and should update.
-            const posShift = Math.max(
-              Math.abs(rawBBox.x - this.personCropRegion.x),
-              Math.abs(rawBBox.y - this.personCropRegion.y),
-            );
-            const sizeShift = Math.max(
-              Math.abs(rawBBox.w - this.personCropRegion.w),
-              Math.abs(rawBBox.h - this.personCropRegion.h),
-            );
-            const posChanged = posShift > 0.03;   // 3% threshold for position
-            const sizeChanged = sizeShift > 0.015; // 1.5% threshold for size
-
-            if (posChanged || sizeChanged) {
-              const s = 0.5; // smooth transition
-              this.personCropRegion = {
-                x: posChanged ? this.personCropRegion.x * s + rawBBox.x * (1 - s) : this.personCropRegion.x,
-                y: posChanged ? this.personCropRegion.y * s + rawBBox.y * (1 - s) : this.personCropRegion.y,
-                w: sizeChanged ? this.personCropRegion.w * s + rawBBox.w * (1 - s) : this.personCropRegion.w,
-                h: sizeChanged ? this.personCropRegion.h * s + rawBBox.h * (1 - s) : this.personCropRegion.h,
-              };
-            }
-          } else {
-            this.personCropRegion = rawBBox; // first frame: snap
-          }
-        }
+        this.updateROICropFromBBox(rawBBox);
 
         // Update auto-framing from mask
         this.autoFramer.updateFromMask(
@@ -333,22 +387,18 @@ export class SegmentationProcessor {
           this.model.maskWidth,
           this.model.maskHeight,
         );
-        // Get motion map for motion-aware temporal smoothing
         const motionMap = this.model.getMotionMap();
 
-        // Full pipeline with new mask
         const pipelineStart = performance.now();
         output = this.pipeline.process(frame, mask, motionMap);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       } else {
-        // Model returned null (not ready yet), use interpolated path
         const pipelineStart = performance.now();
         output = this.pipeline.processInterpolated(frame);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       }
     } else {
       // Skip model, reuse last mask with fresh camera frame
-      // The bilateral upsample will re-align mask edges to the new frame
       this.skippedFrames++;
       const pipelineStart = performance.now();
       output = this.pipeline.processInterpolated(frame);
@@ -587,13 +637,66 @@ export class SegmentationProcessor {
   destroy(): void {
     this.pipeline?.destroy();
     this.model?.destroy();
+    this.workerClient?.destroy();
     this.pipeline = null;
     this.model = null;
     this.adaptive = null;
+    this.workerClient = null;
+    this.workerMask = null;
+    this.workerMotion = null;
     this.initialized = false;
   }
 
   // === Private helpers ===
+
+  /** Update ROI crop from worker bbox (pixel coords from worker) */
+  private updateROICrop(bbox: { minX: number; minY: number; maxX: number; maxY: number } | null): void {
+    if (!bbox || !this.model) return;
+    const mw = this.model.maskWidth;
+    const mh = this.model.maskHeight;
+    const afZoom = this.autoFramer.getCurrentCrop().zoom;
+    const padding = afZoom > 1.02 ? 0.05 * afZoom : 0.05;
+
+    let nx = bbox.minX / mw - padding;
+    let ny = bbox.minY / mh - padding;
+    let nw = (bbox.maxX - bbox.minX) / mw + padding * 2;
+    let nh = (bbox.maxY - bbox.minY) / mh + padding * 2;
+    nx = Math.max(0, nx);
+    ny = Math.max(0, ny);
+    nw = Math.min(nw, 1 - nx);
+    nh = Math.min(nh, 1 - ny);
+
+    this.updateROICropFromBBox({ x: nx, y: ny, w: nw, h: nh });
+  }
+
+  /** Apply dead-zone smoothing to a candidate ROI crop */
+  private updateROICropFromBBox(rawBBox: import('./model').CropRegion | null): void {
+    if (!rawBBox) return;
+    if (this.personCropRegion) {
+      const posShift = Math.max(
+        Math.abs(rawBBox.x - this.personCropRegion.x),
+        Math.abs(rawBBox.y - this.personCropRegion.y),
+      );
+      const sizeShift = Math.max(
+        Math.abs(rawBBox.w - this.personCropRegion.w),
+        Math.abs(rawBBox.h - this.personCropRegion.h),
+      );
+      const posChanged = posShift > 0.03;
+      const sizeChanged = sizeShift > 0.015;
+
+      if (posChanged || sizeChanged) {
+        const s = 0.5;
+        this.personCropRegion = {
+          x: posChanged ? this.personCropRegion.x * s + rawBBox.x * (1 - s) : this.personCropRegion.x,
+          y: posChanged ? this.personCropRegion.y * s + rawBBox.y * (1 - s) : this.personCropRegion.y,
+          w: sizeChanged ? this.personCropRegion.w * s + rawBBox.w * (1 - s) : this.personCropRegion.w,
+          h: sizeChanged ? this.personCropRegion.h * s + rawBBox.h * (1 - s) : this.personCropRegion.h,
+        };
+      }
+    } else {
+      this.personCropRegion = rawBBox;
+    }
+  }
 
   private updateFpsCounter(timestamp: number): void {
     this.fpsCounter++;

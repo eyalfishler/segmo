@@ -35,3 +35,6 @@ export type { AdaptiveConfig, QualityLevel } from './adaptive';
 
 export { AutoFramer } from './autoframe';
 export type { AutoFrameConfig, CropRect } from './autoframe';
+
+export { ModelWorkerClient } from './model-worker';
+export type { WorkerMaskResult } from './model-worker';

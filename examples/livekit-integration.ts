@@ -27,7 +27,8 @@ const processor = new SegmentationProcessor({
   backgroundMode: 'blur',
   blurRadius: 12,
   adaptive: true,                // auto-adjusts quality to device
-  debug: true,                   // logs metrics in dev
+  useWorker: true,               // off-main-thread inference (0ms main thread)
+  debug: false,                  // set true to log metrics
   autoFrame: { enabled: false }, // enable later if wanted
   adaptiveConfig: {
     onQualityChange: (level, reason) => {

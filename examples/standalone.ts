@@ -23,6 +23,7 @@ async function main() {
     blurRadius: 14,
     adaptive: true,
     quality: 'medium',
+    useWorker: true, // off-main-thread inference (0ms main thread)
   });
 
   // 3. Create processed track (Insertable Streams API)

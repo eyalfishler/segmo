@@ -372,6 +372,7 @@ new SegmentationProcessor({
   backgroundImage: null,            // HTMLImageElement
   quality: 'medium',                // 'low' | 'medium' | 'high'
   adaptive: true,                   // auto quality scaling
+  useWorker: true,                  // off-main-thread inference (0ms main thread)
   modelFps: 30,                     // inference rate (matched to render)
   debug: false,                     // log metrics
   autoFrame: { enabled: false },    // auto-centering
