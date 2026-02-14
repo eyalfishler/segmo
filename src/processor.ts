@@ -208,6 +208,10 @@ export class SegmentationProcessor {
    * Can be called during LiveKit track processor init.
    */
   async init(width: number, height: number): Promise<void> {
+    // Coerce to positive integers — OffscreenCanvas requires unsigned long
+    width = Math.max(1, Math.round(width) || 1280);
+    height = Math.max(1, Math.round(height) || 720);
+
     // Clean up previous init (e.g., camera switch triggers re-init)
     if (this.workerClient) {
       this.workerClient.destroy();

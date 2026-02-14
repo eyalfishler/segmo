@@ -253,6 +253,13 @@ export class PostProcessingPipeline {
     gl.bindTexture(gl.TEXTURE_2D, this.cameraTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cameraFrame);
 
+    // Extend mask at frame edges: copy row 2-in from each edge to the outer 2 rows.
+    // Prevents boundary artifacts from model low-confidence at truncated body edges,
+    // which would otherwise be amplified by bilateral/feathering/erosion kernels.
+    if (maskData instanceof Float32Array) {
+      this.padMaskEdges(maskData, maskWidth, maskHeight);
+    }
+
     // Upload raw mask to GPU
     gl.bindTexture(gl.TEXTURE_2D, this.maskTexture);
     if (maskData instanceof Float32Array) {
@@ -734,6 +741,31 @@ export class PostProcessingPipeline {
 
     gl.bindVertexArray(null);
     return vao;
+  }
+
+  /** Extend mask values at frame edges to prevent boundary artifacts from kernel sampling. */
+  private padMaskEdges(mask: Float32Array, w: number, h: number): void {
+    const PAD = 4;
+    // Bottom PAD rows ← row (h - PAD - 1)
+    const srcBot = (h - PAD - 1) * w;
+    for (let r = 0; r < PAD; r++) {
+      const dst = (h - 1 - r) * w;
+      for (let x = 0; x < w; x++) mask[dst + x] = mask[srcBot + x];
+    }
+    // Top PAD rows ← row PAD
+    const srcTop = PAD * w;
+    for (let r = 0; r < PAD; r++) {
+      const dst = r * w;
+      for (let x = 0; x < w; x++) mask[dst + x] = mask[srcTop + x];
+    }
+    // Left/right PAD cols
+    for (let y = 0; y < h; y++) {
+      const off = y * w;
+      for (let c = 0; c < PAD; c++) {
+        mask[off + c] = mask[off + PAD];
+        mask[off + w - 1 - c] = mask[off + w - 1 - PAD];
+      }
+    }
   }
 
   private hexToRgb(hex: string): [number, number, number] {
