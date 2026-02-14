@@ -466,6 +466,28 @@ void main() {
 }`;
 
 /**
+ * Mask Shift Shader (motion compensation)
+ *
+ * Shifts mask UV coordinates to predict person's current position
+ * on interpolated frames. The shift is computed from centroid velocity
+ * tracked across model frames.
+ */
+export const MASK_SHIFT_SHADER = `#version 300 es
+precision highp float;
+
+in vec2 v_texCoord;
+out vec4 outColor;
+
+uniform sampler2D u_mask;
+uniform vec2 u_shift;
+
+void main() {
+  vec2 shifted = clamp(v_texCoord + u_shift, 0.0, 1.0);
+  float m = texture(u_mask, shifted).r;
+  outColor = vec4(m, m, m, 1.0);
+}`;
+
+/**
  * Crop/Zoom Shader (for auto-framing)
  *
  * Simple passthrough that samples from a sub-region of the input texture.

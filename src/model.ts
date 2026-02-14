@@ -63,6 +63,13 @@ export class SegmentationModel {
   private fullMask: Float32Array | null = null; // Full-frame mask (ROI placed back)
   private lastCropRegion: CropRegion | null = null; // Crop used for last inference
   private motionBuffer: Float32Array | null = null; // Reused buffer for motion map (avoids GC)
+  // Motion compensation: 3-zone EMA-smoothed velocity for mask shift prediction
+  private prevCentroid = [0.5, 0.5, 0.5]; // [topX, midX, botX] normalized
+  private velocity = [0, 0, 0]; // EMA-smoothed X velocity per Y zone
+  private velocityY = 0; // EMA-smoothed Y velocity (whole body)
+  private prevCentroidYAll = 0.5;
+  private hasPreviousMask = false; // True after first real frame (prevents init spike)
+  private firstCentroid = true; // Seed centroid from first detection
   // Cached bbox from last segment() call — computed during ROI mapping or mask extraction
   private cachedBBoxMinX = 0;
   private cachedBBoxMinY = 0;
@@ -180,7 +187,12 @@ export class SegmentationModel {
         this.lastMask = new Float32Array(pixelCount);
         this.previousMask = new Float32Array(pixelCount);
       } else {
-        this.previousMask!.set(this.lastMask);
+        // Save previous mask in full-frame space (fullMask still holds last frame's result)
+        const prev = this.fullMask ?? this.lastMask;
+        if (prev) {
+          this.previousMask!.set(prev);
+          this.hasPreviousMask = true;
+        }
       }
 
       if (result.confidenceMasks.length > 2) {
@@ -266,12 +278,19 @@ export class SegmentationModel {
       this.cachedBBoxMaxX = bMaxX;
       this.cachedBBoxMaxY = bMaxY;
       this.cachedBBoxFound = bFound;
+      if (bFound) this.updateCentroidMotion(bMinX, bMinY, bMaxX, bMaxY);
 
       return this.fullMask;
     }
 
     // Non-ROI path: compute bbox during mask (already copied above)
     this.computeBBoxFromMask();
+    if (this.cachedBBoxFound) {
+      this.updateCentroidMotion(
+        this.cachedBBoxMinX, this.cachedBBoxMinY,
+        this.cachedBBoxMaxX, this.cachedBBoxMaxY,
+      );
+    }
     return this.lastMask;
   }
 
@@ -286,7 +305,7 @@ export class SegmentationModel {
    */
   getMotionMap(): Float32Array | null {
     const current = this.fullMask ?? this.lastMask;
-    if (!current || !this.previousMask) return null;
+    if (!current || !this.previousMask || !this.hasPreviousMask) return null;
 
     // Reuse buffer (avoids GC pressure from allocating every frame)
     if (!this.motionBuffer || this.motionBuffer.length !== current.length) {
@@ -296,6 +315,71 @@ export class SegmentationModel {
       this.motionBuffer[i] = Math.abs(current[i] - this.previousMask[i]);
     }
     return this.motionBuffer;
+  }
+
+  /** Get 3-zone EMA-smoothed velocity for mask motion compensation */
+  getMaskMotionVector(): { vx: [number, number, number]; vy: number } {
+    return {
+      vx: [this.velocity[0], this.velocity[1], this.velocity[2]],
+      vy: this.velocityY,
+    };
+  }
+
+  /** Update 3-zone centroid tracking from mask. Scans top/mid/bottom Y bands. */
+  private updateCentroidMotion(_minX: number, minY: number, _maxX: number, maxY: number): void {
+    const mask = this.fullMask ?? this.lastMask;
+    if (!mask) return;
+    const mw = this.config.outputWidth;
+    const mh = this.config.outputHeight;
+    const personH = maxY - minY;
+    if (personH < 3) return;
+
+    const bandH = personH / 3;
+    const band1Start = minY + bandH;
+    const band2Start = minY + 2 * bandH;
+
+    const sumX = [0, 0, 0];
+    const count = [0, 0, 0];
+    let sumY = 0, countY = 0;
+
+    for (let y = minY; y <= maxY; y++) {
+      const off = y * mw;
+      const band = y >= band2Start ? 2 : y >= band1Start ? 1 : 0;
+      for (let x = 0; x < mw; x++) {
+        if (mask[off + x] > 0.5) {
+          sumX[band] += x;
+          count[band]++;
+          sumY += y;
+          countY++;
+        }
+      }
+    }
+
+    const cx = [
+      count[0] > 0 ? sumX[0] / count[0] / mw : 0.5,
+      count[1] > 0 ? sumX[1] / count[1] / mw : 0.5,
+      count[2] > 0 ? sumX[2] / count[2] / mw : 0.5,
+    ];
+    const cyAll = countY > 0 ? sumY / countY / mh : 0.5;
+
+    // First detection: seed centroid without computing velocity (prevents init spike)
+    if (this.firstCentroid) {
+      this.prevCentroid = [cx[0], cx[1], cx[2]];
+      this.prevCentroidYAll = cyAll;
+      this.firstCentroid = false;
+      return;
+    }
+
+    // EMA smoothing (α=0.8) — responsive to real movement, dampens noise
+    const alpha = 0.8;
+    for (let i = 0; i < 3; i++) {
+      const rawV = cx[i] - this.prevCentroid[i];
+      this.velocity[i] = alpha * rawV + (1 - alpha) * this.velocity[i];
+      this.prevCentroid[i] = cx[i];
+    }
+    const rawVy = cyAll - this.prevCentroidYAll;
+    this.velocityY = alpha * rawVy + (1 - alpha) * this.velocityY;
+    this.prevCentroidYAll = cyAll;
   }
 
   /**
@@ -372,6 +456,8 @@ export class SegmentationModel {
     this.motionBuffer = null;
     this.lastCropRegion = null;
     this.cachedBBoxFound = false;
+    this.hasPreviousMask = false;
+    this.firstCentroid = true;
   }
 }
 

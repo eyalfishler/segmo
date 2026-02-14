@@ -91,7 +91,7 @@ export class AutoFramer {
       padding: config.padding ?? 0.1,
       smoothing: config.smoothing ?? 0.75,
       maxZoom: config.maxZoom ?? 1.5,
-      minZoom: config.minZoom ?? 1.2,
+      minZoom: config.minZoom ?? 1.0,
       continuous: config.continuous ?? true,
       deadZone: config.deadZone ?? 0.03,
     };
@@ -263,7 +263,7 @@ export class AutoFramer {
     // Target: person should fill ~90% of the output (largest dimension).
     // Zoom = targetFill / actualFill. Further away = more zoom, closer = less.
     // Person at 80% → 1.12x, at 60% → 1.5x (max), at 50% → 1.5x (capped).
-    const targetFill = 0.9;
+    const targetFill = 0.7;
     const actualFill = Math.max(bbox.width, bbox.height);
     const rawZoom = actualFill > 0.01 ? targetFill / actualFill : 1.0;
     const zoom = Math.max(minZoom, Math.min(maxZoom, rawZoom));

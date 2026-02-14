@@ -154,6 +154,10 @@ export class SegmentationProcessor {
   private workerBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
   private workerHasFreshMask = false;
 
+  // Mask motion compensation: 3-zone velocity prediction
+  private maskVx: [number, number, number] = [0, 0, 0];
+  private maskVy = 0;
+  private interpFrameCount = 0;
 
   constructor(options: SegmentationProcessorOptions = {}) {
     this.opts = {
@@ -320,42 +324,50 @@ export class SegmentationProcessor {
     const frameStart = performance.now();
     this.updateFpsCounter(timestamp);
 
-    // Decide: run model or interpolate?
+    // Adaptive model rate: run model faster during motion to reduce mask lag.
+    // Up to 4x speedup, capped at display refresh (~60fps / 16ms min).
+    const maxVx = Math.max(Math.abs(this.maskVx[0]), Math.abs(this.maskVx[1]), Math.abs(this.maskVx[2]));
+    const motionMag = Math.sqrt(maxVx * maxVx + this.maskVy * this.maskVy);
+    const motionSpeedup = Math.min(4.0, 1.0 + motionMag * 20);
+    const effectiveInterval = Math.max(16, this.modelInterval / motionSpeedup);
     const timeSinceLastModel = timestamp - this.lastModelTime;
-    const shouldRunModel = timeSinceLastModel >= this.modelInterval;
+    const shouldRunModel = timeSinceLastModel >= effectiveInterval;
 
     let output: OffscreenCanvas;
 
     // --- Worker path: non-blocking inference off main thread ---
     if (this.workerClient) {
-      // Consume any fresh mask from the worker
       if (this.workerHasFreshMask && this.workerMask) {
         this.workerHasFreshMask = false;
         this.modelFpsCounter++;
-
-        // Update ROI crop from worker's bbox
         this.updateROICrop(this.workerBBox);
-
-        // Update auto-framing from worker mask
         this.autoFramer.updateFromMask(
-          this.workerMask,
-          this.model.maskWidth,
-          this.model.maskHeight,
+          this.workerMask, this.model.maskWidth, this.model.maskHeight,
         );
+        // Capture motion vector + reset interpolation counter
+        const mv = this.model.getMaskMotionVector();
+        this.maskVx = mv.vx;
+        this.maskVy = mv.vy;
+        this.interpFrameCount = 0;
 
-        // Full pipeline with fresh mask + motion
+        // const vxW = mv.vx[0] * 0.6 + mv.vx[1] * 0.3 + mv.vx[2] * 0.1;
+        // if (Math.abs(vxW) > 0.0005 || Math.abs(mv.vy) > 0.0005) {
+        //   console.log(`[Motion] vx=[${mv.vx[0].toFixed(4)}, ${mv.vx[1].toFixed(4)}, ${mv.vx[2].toFixed(4)}] vy=${mv.vy.toFixed(4)} | model frame`);
+        // }
+
         const pipelineStart = performance.now();
         output = this.pipeline.process(frame, this.workerMask, this.workerMotion);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
-        this.metrics.modelInferenceMs = 0; // off main thread
+        this.metrics.modelInferenceMs = 0;
       } else {
-        // No fresh mask yet — interpolate with last mask
+        // Interpolate with accumulating motion-compensated shift
+        this.skippedFrames++;
+        this.interpFrameCount++;
         const pipelineStart = performance.now();
-        output = this.pipeline.processInterpolated(frame);
+        output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       }
 
-      // Fire next inference request (non-blocking)
       if (shouldRunModel) {
         this.workerClient.requestSegment(frame, timestamp, this.personCropRegion);
         this.lastModelTime = timestamp;
@@ -375,33 +387,41 @@ export class SegmentationProcessor {
       this.modelFpsCounter++;
 
       if (mask) {
-        // Update ROI crop from model's cached bbox
         const afZoom = this.autoFramer.getCurrentCrop().zoom;
         const roiPadding = afZoom > 1.02 ? 0.05 * afZoom : 0.05;
         const rawBBox = this.model.getPersonBBox(roiPadding);
         this.updateROICropFromBBox(rawBBox);
-
-        // Update auto-framing from mask
         this.autoFramer.updateFromMask(
-          mask,
-          this.model.maskWidth,
-          this.model.maskHeight,
+          mask, this.model.maskWidth, this.model.maskHeight,
         );
         const motionMap = this.model.getMotionMap();
+
+        // Capture motion vector + reset interpolation counter
+        const mv = this.model.getMaskMotionVector();
+        this.maskVx = mv.vx;
+        this.maskVy = mv.vy;
+        this.interpFrameCount = 0;
+
+        // const vxW = mv.vx[0] * 0.6 + mv.vx[1] * 0.3 + mv.vx[2] * 0.1;
+        // if (Math.abs(vxW) > 0.0005 || Math.abs(mv.vy) > 0.0005) {
+        //   console.log(`[Motion] vx=[${mv.vx[0].toFixed(4)}, ${mv.vx[1].toFixed(4)}, ${mv.vx[2].toFixed(4)}] vy=${mv.vy.toFixed(4)} | model frame`);
+        // }
 
         const pipelineStart = performance.now();
         output = this.pipeline.process(frame, mask, motionMap);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       } else {
+        this.interpFrameCount++;
         const pipelineStart = performance.now();
-        output = this.pipeline.processInterpolated(frame);
+        output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       }
     } else {
-      // Skip model, reuse last mask with fresh camera frame
+      // Not time for model — interpolate with motion-compensated mask
       this.skippedFrames++;
+      this.interpFrameCount++;
       const pipelineStart = performance.now();
-      output = this.pipeline.processInterpolated(frame);
+      output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
       this.metrics.pipelineMs = performance.now() - pipelineStart;
     }
 
@@ -672,6 +692,27 @@ export class SegmentationProcessor {
   }
 
   // === Private helpers ===
+
+  /** 3-zone constant-velocity shift, weighted by zone importance.
+   * Head zone 60%, mid 30%, bottom 10%.
+   * Capped to ±0.12 — seated person's realistic range. */
+  private getAccumulatedShift(): { dx: number; dy: number } {
+    const t = this.interpFrameCount;
+    const amp = 1.0; // velocities are in full-frame normalized space (~0.01 during movement)
+    const vx = this.maskVx[0] * 0.6 + this.maskVx[1] * 0.3 + this.maskVx[2] * 0.1;
+    let dx = vx * t * amp;
+    let dy = this.maskVy * t * amp;
+    const maxShift = 0.12;
+    dx = Math.max(-maxShift, Math.min(maxShift, dx));
+    dy = Math.max(-maxShift, Math.min(maxShift, dy));
+
+    // // Debug: log every frame when moving
+    // if (Math.abs(vx) > 0.0005 || Math.abs(this.maskVy) > 0.0005) {
+    //   console.log(`[Motion] vx=[${this.maskVx[0].toFixed(4)}, ${this.maskVx[1].toFixed(4)}, ${this.maskVx[2].toFixed(4)}] vy=${this.maskVy.toFixed(4)} | t=${t} shift=(${dx.toFixed(4)}, ${dy.toFixed(4)})`);
+    // }
+
+    return { dx, dy };
+  }
 
   /** Update ROI crop from worker bbox (pixel coords from worker) */
   private updateROICrop(bbox: { minX: number; minY: number; maxX: number; maxY: number } | null): void {

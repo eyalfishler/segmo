@@ -18,6 +18,7 @@ import {
   LIGHT_WRAP_SHADER,
   COLOR_MATCH_SHADER,
   CROP_SHADER,
+  MASK_SHIFT_SHADER,
 } from './shaders';
 
 export interface PipelineOptions {
@@ -87,6 +88,8 @@ export class PostProcessingPipeline {
   private previousMaskFBO!: Framebuffer;
   private morphologyFBO1!: Framebuffer;
   private morphologyFBO2!: Framebuffer;
+  private shiftProg!: ShaderProgram;
+  private shiftFBO!: Framebuffer;
   private bilateralFBO!: Framebuffer;
   private featherFBO!: Framebuffer;
   private blurFBO1!: Framebuffer;
@@ -159,6 +162,9 @@ export class PostProcessingPipeline {
     this.morphologyProg = this.createProgram(VERTEX_SHADER, MORPHOLOGY_SHADER, [
       'u_mask', 'u_texelSize', 'u_operation', 'u_radius',
     ]);
+    this.shiftProg = this.createProgram(VERTEX_SHADER, MASK_SHIFT_SHADER, [
+      'u_mask', 'u_shift',
+    ]);
     this.bilateralProg = this.createProgram(VERTEX_SHADER, BILATERAL_UPSAMPLE_SHADER, [
       'u_mask', 'u_guide', 'u_maskSize', 'u_guideSize',
       'u_spatialSigma', 'u_rangeSigma',
@@ -191,6 +197,7 @@ export class PostProcessingPipeline {
     this.previousMaskFBO = this.createFramebuffer(maskWidth, maskHeight);
     this.morphologyFBO1 = this.createFramebuffer(maskWidth, maskHeight);
     this.morphologyFBO2 = this.createFramebuffer(maskWidth, maskHeight);
+    this.shiftFBO = this.createFramebuffer(maskWidth, maskHeight);
 
     // Full resolution processing
     this.bilateralFBO = this.createFramebuffer(width, height);
@@ -395,7 +402,10 @@ export class PostProcessingPipeline {
    * Process using an interpolated mask (for skipped frames).
    * Re-uses the previous smoothed mask without model inference.
    */
-  processInterpolated(cameraFrame: TexImageSource): OffscreenCanvas {
+  processInterpolated(
+    cameraFrame: TexImageSource,
+    maskShift?: { dx: number; dy: number },
+  ): OffscreenCanvas {
     const gl = this.gl;
     const { width, height } = this.opts;
 
@@ -403,10 +413,22 @@ export class PostProcessingPipeline {
     gl.bindTexture(gl.TEXTURE_2D, this.cameraTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cameraFrame);
 
-    // Use the previous temporal mask directly into bilateral upsample
-    // (skipping temporal smoothing since we have no new model output)
+    // Motion compensation: shift mask to predicted position before bilateral.
+    // On interpolated frames, the mask is stale — this shifts it toward where
+    // the person has moved based on tracked centroid velocity.
+    const hasShift = maskShift && (Math.abs(maskShift.dx) > 0.0001 || Math.abs(maskShift.dy) > 0.0001);
+    let maskForBilateral = this.previousMaskFBO.texture;
+    if (hasShift) {
+      this.renderToFBO(this.shiftFBO, this.shiftProg, () => {
+        this.bindTexture(0, this.previousMaskFBO.texture, 'u_mask');
+        gl.uniform2f(this.shiftProg.uniforms['u_shift'], maskShift!.dx, maskShift!.dy);
+      });
+      maskForBilateral = this.shiftFBO.texture;
+    }
+
+    // Bilateral upsample with camera guide (snaps shifted mask to current edges)
     this.renderToFBO(this.bilateralFBO, this.bilateralProg, () => {
-      this.bindTexture(0, this.previousMaskFBO.texture, 'u_mask');
+      this.bindTexture(0, maskForBilateral, 'u_mask');
       this.bindTexture(1, this.cameraTexture, 'u_guide');
       gl.uniform2f(this.bilateralProg.uniforms['u_maskSize'], this.opts.maskWidth, this.opts.maskHeight);
       gl.uniform2f(this.bilateralProg.uniforms['u_guideSize'], width, height);
@@ -492,14 +514,14 @@ export class PostProcessingPipeline {
     const gl = this.gl;
 
     // Delete programs
-    [this.temporalProg, this.morphologyProg, this.bilateralProg, this.featherProg,
+    [this.temporalProg, this.morphologyProg, this.shiftProg, this.bilateralProg, this.featherProg,
      this.compositeProg, this.blurProg, this.lightWrapProg, this.colorMatchProg,
      this.cropProg].forEach(p => {
       gl.deleteProgram(p.program);
     });
 
     // Delete framebuffers
-    [this.temporalFBO, this.previousMaskFBO, this.morphologyFBO1, this.morphologyFBO2,
+    [this.temporalFBO, this.previousMaskFBO, this.morphologyFBO1, this.morphologyFBO2, this.shiftFBO,
      this.bilateralFBO, this.featherFBO, this.blurFBO1, this.blurFBO2,
      this.compositeFBO, this.preCropFBO].forEach(fbo => {
       gl.deleteFramebuffer(fbo.fbo);
