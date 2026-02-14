@@ -363,6 +363,10 @@ export class SegmentationProcessor {
         this.autoFramer.updateFromMask(
           this.workerMask, this.model.maskWidth, this.model.maskHeight,
         );
+        // Update centroid tracking from worker mask (model.segment() isn't called in worker path)
+        if (this.workerBBox) {
+          this.model.updateCentroidFromExternal(this.workerMask, this.workerBBox);
+        }
         // Capture motion vector + reset interpolation counter
         const mv = this.model.getMaskMotionVector();
         this.maskVx = mv.vx;

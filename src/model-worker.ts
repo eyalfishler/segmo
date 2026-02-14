@@ -24,7 +24,8 @@ let resizeCanvas = null;
 let resizeCtx = null;
 let config = null;
 let lastMask = null;
-let previousMask = null;
+let previousFullMask = null;
+let hasPreviousMask = false;
 
 async function init(cfg) {
   config = cfg;
@@ -94,9 +95,7 @@ function segment(bitmap, timestamp, crop) {
   // Reuse buffers
   if (!lastMask || lastMask.length !== pixelCount) {
     lastMask = new Float32Array(pixelCount);
-    previousMask = new Float32Array(pixelCount);
-  } else {
-    previousMask.set(lastMask);
+    previousFullMask = new Float32Array(pixelCount);
   }
 
   if (result.confidenceMasks.length > 2) {
@@ -111,14 +110,6 @@ function segment(bitmap, timestamp, crop) {
   firstMask.close();
   for (let i = 1; i < result.confidenceMasks.length; i++) {
     result.confidenceMasks[i].close();
-  }
-
-  // Compute motion map
-  const motion = new Float32Array(pixelCount);
-  if (previousMask) {
-    for (let i = 0; i < pixelCount; i++) {
-      motion[i] = Math.abs(lastMask[i] - previousMask[i]);
-    }
   }
 
   // Map crop mask to full frame + compute bbox
@@ -166,6 +157,22 @@ function segment(bitmap, timestamp, crop) {
       }
     }
   }
+
+  // Compute motion map in full-frame space (after ROI mapping)
+  const motion = new Float32Array(pixelCount);
+  if (hasPreviousMask && previousFullMask) {
+    for (let i = 0; i < pixelCount; i++) {
+      motion[i] = Math.abs(outMask[i] - previousFullMask[i]);
+    }
+  }
+
+  // Save previous mask in full-frame space for next frame's motion map
+  if (!previousFullMask || previousFullMask.length !== pixelCount) {
+    previousFullMask = new Float32Array(outMask);
+  } else {
+    previousFullMask.set(outMask);
+  }
+  hasPreviousMask = true;
 
   // Transfer buffers (zero-copy)
   self.postMessage({

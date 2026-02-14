@@ -325,10 +325,23 @@ export class SegmentationModel {
     };
   }
 
+  /** Update centroid tracking from an external mask + bbox (worker path).
+   *  Call this when segment() isn't used but you have a mask and person bbox. */
+  updateCentroidFromExternal(
+    mask: Float32Array,
+    bbox: { minX: number; minY: number; maxX: number; maxY: number },
+  ): void {
+    this.updateCentroidMotionFromMask(mask, bbox.minX, bbox.minY, bbox.maxX, bbox.maxY);
+  }
+
   /** Update 3-zone centroid tracking from mask. Scans top/mid/bottom Y bands. */
   private updateCentroidMotion(_minX: number, minY: number, _maxX: number, maxY: number): void {
     const mask = this.fullMask ?? this.lastMask;
     if (!mask) return;
+    this.updateCentroidMotionFromMask(mask, _minX, minY, _maxX, maxY);
+  }
+
+  private updateCentroidMotionFromMask(mask: Float32Array, _minX: number, minY: number, _maxX: number, maxY: number): void {
     const mw = this.config.outputWidth;
     const mh = this.config.outputHeight;
     const personH = maxY - minY;
