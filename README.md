@@ -24,7 +24,9 @@ npm install segmo @mediapipe/tasks-vision
 
 ### With LiveKit
 
-Drop-in replacement for `@livekit/track-processors`. Implements the official `TrackProcessor` interface via `processedTrack`.
+Drop-in replacement for `@livekit/track-processors`. Call `toLiveKitProcessor()` to get a LiveKit-compatible `TrackProcessor` object that implements the official `processedTrack` interface — this handles `init`, `restart`, and `destroy` lifecycle events, reads track dimensions, and wires up the Insertable Streams pipeline automatically.
+
+> **Important:** Always pass `processor.toLiveKitProcessor()` to `setProcessor()`, not the `SegmentationProcessor` instance directly.
 
 ```ts
 import { SegmentationProcessor } from 'segmo';
