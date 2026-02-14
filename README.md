@@ -8,6 +8,9 @@ Lightweight MediaPipe model + multi-stage GPU post-processing pipeline with alph
 
 Takes your webcam feed and produces smooth, artifact-free background blur/replacement at 30fps — approaching the quality Google Meet achieves with temporal stability, sharp edges, hair detail preservation, and no flickering.
 
+## How it looks
+<img width="1868" height="1490" alt="image" src="https://github.com/user-attachments/assets/faada756-0865-4e5f-b7d7-6f199524a15d" />
+
 ## Install
 
 ```bash
