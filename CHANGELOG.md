@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+### Bug Fixes
+- Fix mask boundary artifacts caused by motion compensation shift shader zeroing out edge pixels on interpolated frames — now clamps instead of discarding OOB samples
+- Pad mask edges (4 rows/cols) before GPU upload to prevent model low-confidence boundary values from being amplified by bilateral/feathering/erosion kernels
+- Start adaptive quality at ultra (tier 0) on init to eliminate ~5 second startup period where movement caused visible blur artifacts — downgrades fast (2 bad windows) if device can't sustain it
+- Coerce `init()` width/height to positive integers for OffscreenCanvas safety
+
+### Docs
+- Clarify LiveKit processor usage in README (`toLiveKitProcessor()` guidance)
+
 ## 0.1.0
 
 Initial release.
