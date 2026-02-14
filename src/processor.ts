@@ -277,12 +277,10 @@ export class SegmentationProcessor {
       this.log('Running initial calibration benchmark...');
       // The adaptive controller will calibrate after the first ~30 real frames,
       // but we can seed it based on the quality preset
-      const presetToTier: Record<string, number> = {
-        high: 0,
-        medium: 1,
-        low: 3,
-      };
-      this.adaptive.setTier(presetToTier[this.opts.quality] ?? 1);
+      // Start at ultra (tier 0) — downgrade is fast (2 bad windows ≈ 2s) while
+      // upgrade from a lower tier is slow (5 good windows ≈ 5s), so starting
+      // high avoids visible quality ramp-up at startup.
+      this.adaptive.setTier(0);
       this.adaptive.unlock(); // Allow auto-adjustment after initial setting
     }
 

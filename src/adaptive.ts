@@ -135,7 +135,7 @@ const QUALITY_TIERS: QualityLevel[] = [
 
 export class AdaptiveQualityController {
   private config: Required<AdaptiveConfig>;
-  private currentTier = 1; // Start at 'high', not 'ultra'
+  private currentTier = 1; // Default — processor overrides via setTier()
   private frameTimes: number[] = [];
   private windowIndex = 0;
   private consecutiveGoodWindows = 0;
