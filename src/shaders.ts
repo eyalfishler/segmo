@@ -272,6 +272,8 @@ uniform sampler2D u_background;    // Background texture (blurred frame, image, 
 uniform int u_backgroundMode;      // 0=blur, 1=image, 2=color
 uniform vec3 u_backgroundColor;    // Solid color background
 uniform vec2 u_texelSize;          // 1.0 / frame dimensions
+uniform vec2 u_cropOffset;         // Auto-frame crop offset (0,0 when no crop)
+uniform vec2 u_cropSize;           // Auto-frame crop size (1,1 when no crop)
 
 // Cross-shaped sample pattern: wider reach for fg/bg color estimation (13 samples)
 const vec2 mOff[13] = vec2[13](
@@ -294,8 +296,11 @@ void main() {
   float hi = mix(0.85, 0.65, sharpness);
   float mask = smoothstep(lo, hi, rawMask);
 
+  // Background UV: reverse auto-frame crop so background stays fixed on screen
+  vec2 bgUV = (v_texCoord - u_cropOffset) / u_cropSize;
+
   // New background color
-  vec4 bgTex = texture(u_background, v_texCoord);
+  vec4 bgTex = texture(u_background, bgUV);
   float isColor = step(1.5, float(u_backgroundMode));
   vec3 newBg = mix(bgTex.rgb, u_backgroundColor, isColor);
 

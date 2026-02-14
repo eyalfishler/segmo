@@ -54,6 +54,8 @@ export interface PipelineOptions {
   featherRadius?: number;
   /** Bilateral upsample range sigma (default: 0.1) */
   rangeSigma?: number;
+  /** Keep background fixed in screen space during auto-frame crop (default: false) */
+  backgroundFixed?: boolean;
 }
 
 interface ShaderProgram {
@@ -125,6 +127,7 @@ export class PostProcessingPipeline {
       disappearRate: 0.35,
       featherRadius: 3.0,
       rangeSigma: 0.1,
+      backgroundFixed: false,
       ...options,
     };
 
@@ -174,6 +177,7 @@ export class PostProcessingPipeline {
     ]);
     this.compositeProg = this.createProgram(VERTEX_SHADER, COMPOSITE_SHADER, [
       'u_camera', 'u_mask', 'u_background', 'u_backgroundMode', 'u_backgroundColor', 'u_texelSize',
+      'u_cropOffset', 'u_cropSize',
     ]);
     this.blurProg = this.createProgram(VERTEX_SHADER, BLUR_PASS_SHADER, [
       'u_source', 'u_direction', 'u_radius',
@@ -377,6 +381,9 @@ export class PostProcessingPipeline {
       ? (setup: () => void) => this.renderToFBO(compositeTarget, this.compositeProg, setup)
       : (setup: () => void) => this.renderToScreen(this.compositeProg, setup);
 
+    const crop = this.opts.backgroundFixed && this.cropRect
+      ? this.cropRect : { x: 0, y: 0, w: 1, h: 1 };
+
     renderComposite(() => {
       this.bindTexture(0, this.cameraTexture, 'u_camera');
       this.bindTexture(1, this.bilateralFBO.texture, 'u_mask'); // eroded mask
@@ -389,6 +396,8 @@ export class PostProcessingPipeline {
       const [r, g, b] = this.hexToRgb(this.opts.backgroundColor);
       gl.uniform3f(this.compositeProg.uniforms['u_backgroundColor'], r, g, b);
       gl.uniform2f(this.compositeProg.uniforms['u_texelSize'], 1.0 / width, 1.0 / height);
+      gl.uniform2f(this.compositeProg.uniforms['u_cropOffset'], crop.x, crop.y);
+      gl.uniform2f(this.compositeProg.uniforms['u_cropSize'], crop.w, crop.h);
     });
 
     // --- Stage 5: Light Wrap (subtle BG light spill on edges) ---
@@ -474,6 +483,9 @@ export class PostProcessingPipeline {
       ? (setup: () => void) => this.renderToFBO(compositeTarget, this.compositeProg, setup)
       : (setup: () => void) => this.renderToScreen(this.compositeProg, setup);
 
+    const crop = this.opts.backgroundFixed && this.cropRect
+      ? this.cropRect : { x: 0, y: 0, w: 1, h: 1 };
+
     renderComposite(() => {
       this.bindTexture(0, this.cameraTexture, 'u_camera');
       this.bindTexture(1, this.bilateralFBO.texture, 'u_mask'); // eroded mask
@@ -486,6 +498,8 @@ export class PostProcessingPipeline {
       const [r, g, b] = this.hexToRgb(this.opts.backgroundColor);
       gl.uniform3f(this.compositeProg.uniforms['u_backgroundColor'], r, g, b);
       gl.uniform2f(this.compositeProg.uniforms['u_texelSize'], 1.0 / width, 1.0 / height);
+      gl.uniform2f(this.compositeProg.uniforms['u_cropOffset'], crop.x, crop.y);
+      gl.uniform2f(this.compositeProg.uniforms['u_cropSize'], crop.w, crop.h);
     });
 
     if (this.opts.lightWrap) {

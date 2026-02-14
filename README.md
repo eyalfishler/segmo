@@ -161,6 +161,22 @@ framer.updateConfig({
 });
 ```
 
+#### Fixed background (no parallax)
+
+By default, auto-framing crops both the subject and the virtual background together — the background pans and zooms as the subject moves. Set `backgroundFixed` to keep the background stationary while only the subject is reframed:
+
+```ts
+const processor = new SegmentationProcessor({
+  backgroundMode: 'image',
+  backgroundImage: bgImage,
+  useWorker: true,
+  backgroundFixed: true,  // background stays fixed during auto-frame
+  autoFrame: { enabled: true, continuous: true },
+});
+```
+
+This works with `image` and `color` background modes. The composite shader reverse-transforms the background UV to cancel the crop, so the background always fills the full output frame regardless of zoom level.
+
 #### Stopping and cleanup
 
 ```ts
@@ -538,6 +554,7 @@ new SegmentationProcessor({
   blurRadius: 12,                   // 4-24
   backgroundColor: '#00FF00',       // hex
   backgroundImage: null,            // HTMLImageElement
+  backgroundFixed: false,           // keep bg stationary during auto-frame
   quality: 'medium',                // 'low' | 'medium' | 'high'
   adaptive: true,                   // auto quality scaling
   useWorker: false,                 // off-main-thread inference (0ms main thread)
@@ -559,6 +576,7 @@ new SegmentationProcessor({
 | `setBackgroundColor(hex)` | Set color |
 | `setBackgroundImage(img)` | Set image |
 | `setBlurRadius(n)` | Adjust blur |
+| `setBackgroundFixed(on)` | Keep background stationary during auto-frame |
 | `setQuality(preset)` | Manual quality |
 | `setAutoFrame(on, continuous?)` | Toggle auto-centering |
 | `getMetrics()` | Performance data |
