@@ -90,8 +90,8 @@ export class AutoFramer {
       headroom: config.headroom ?? 0.15,
       padding: config.padding ?? 0.1,
       smoothing: config.smoothing ?? 0.75,
-      maxZoom: config.maxZoom ?? 1.5,
-      minZoom: config.minZoom ?? 1.0,
+      maxZoom: config.maxZoom ?? 1.4,
+      minZoom: config.minZoom ?? 1.10,
       continuous: config.continuous ?? true,
       deadZone: config.deadZone ?? 0.03,
     };
@@ -258,30 +258,26 @@ export class AutoFramer {
   }
 
   private computeCropFromBBox(bbox: BBox): CropRect {
-    const { maxZoom, minZoom } = this.config;
+    const { maxZoom, minZoom, headroom } = this.config;
 
-    // Target: person should fill ~90% of the output (largest dimension).
-    // Zoom = targetFill / actualFill. Further away = more zoom, closer = less.
-    // Person at 80% → 1.12x, at 60% → 1.5x (max), at 50% → 1.5x (capped).
-    const targetFill = 0.7;
+    // Zoom: person should fill ~85% of the output (largest dimension).
+    // Only zooms significantly when person is far from camera.
+    // Close-up: minZoom applies for centering only. Far: zooms to frame properly.
+    const targetFill = 0.8;
     const actualFill = Math.max(bbox.width, bbox.height);
     const rawZoom = actualFill > 0.01 ? targetFill / actualFill : 1.0;
     const zoom = Math.max(minZoom, Math.min(maxZoom, rawZoom));
 
-    const cropSize = 1 / zoom;
-    const cropW = cropSize;
-    const cropH = cropSize;
+    const cropW = 1 / zoom;
+    const cropH = 1 / zoom;
 
-    // Position person's bbox center in the lower portion of the crop.
-    // Higher offset = person lower in crop = head higher in output.
-    // The bbox center is typically at chest level, so we need offset > 0.5
-    // to push the head into the upper third (like Google Meet).
-    // Close (fills frame): 0.55 — head in upper third with headroom
-    // Far (small in frame): 0.58 — head well above center
-    const fillRatio = Math.max(bbox.width, bbox.height);
-    const vertOffset = 0.55 + (1 - fillRatio) * 0.03;
-    let cropX = bbox.centerX - cropW / 2;
-    let cropY = bbox.centerY - cropH * vertOffset;
+    // Horizontal: geometric center of person (not mass-weighted — more stable)
+    const personCenterX = (bbox.minX + bbox.maxX) / 2;
+    let cropX = personCenterX - cropW / 2;
+
+    // Vertical: position head top (bbox.minY) with headroom above it.
+    // This places the head in the upper portion like Google Meet.
+    let cropY = bbox.minY - headroom * cropH;
 
     // Clamp to frame bounds
     cropX = Math.max(0, Math.min(cropX, 1 - cropW));

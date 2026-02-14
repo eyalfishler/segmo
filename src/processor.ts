@@ -333,6 +333,25 @@ export class SegmentationProcessor {
     const timeSinceLastModel = timestamp - this.lastModelTime;
     const shouldRunModel = timeSinceLastModel >= effectiveInterval;
 
+    // Apply auto-frame crop BEFORE rendering so centering is immediate
+    const cropRect = this.autoFramer.getCurrentCrop();
+    if (cropRect.zoom > 1.02) {
+      this.pipeline.setCropRect({
+        x: cropRect.x,
+        y: cropRect.y,
+        w: cropRect.width,
+        h: cropRect.height,
+      });
+      // if (this.frameCount % 60 === 0) {
+      //   console.log(`[AutoFrame] crop x=${cropRect.x.toFixed(3)} y=${cropRect.y.toFixed(3)} w=${cropRect.width.toFixed(3)} h=${cropRect.height.toFixed(3)} zoom=${cropRect.zoom.toFixed(3)}`);
+      // }
+    } else {
+      this.pipeline.setCropRect(null);
+      // if (this.frameCount % 60 === 0) {
+      //   console.log(`[AutoFrame] NO CROP zoom=${cropRect.zoom.toFixed(3)}`);
+      // }
+    }
+
     let output: OffscreenCanvas;
 
     // --- Worker path: non-blocking inference off main thread ---
@@ -423,19 +442,6 @@ export class SegmentationProcessor {
       const pipelineStart = performance.now();
       output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
       this.metrics.pipelineMs = performance.now() - pipelineStart;
-    }
-
-    // Apply auto-frame crop on GPU (no CPU canvas copy)
-    const cropRect = this.autoFramer.getCurrentCrop();
-    if (cropRect.zoom > 1.02) {
-      this.pipeline.setCropRect({
-        x: cropRect.x,
-        y: cropRect.y,
-        w: cropRect.width,
-        h: cropRect.height,
-      });
-    } else {
-      this.pipeline.setCropRect(null);
     }
 
     this.metrics.totalFrameMs = performance.now() - frameStart;

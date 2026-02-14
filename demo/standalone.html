@@ -324,25 +324,25 @@
         ctx.drawImage(output, 0, 0);
 
         // Debug: draw model ROI crop rectangle (green)
-        // const modelCrop = processor.getModelCropRegion();
-        // if (modelCrop) {
-        //   const af = processor.getCropRect();
-        //   let rx, ry, rw, rh;
-        //   if (af && af.zoom > 1.02) {
-        //     rx = (modelCrop.x - af.x) / af.width * outputCanvas.width;
-        //     ry = (modelCrop.y - af.y) / af.height * outputCanvas.height;
-        //     rw = modelCrop.w / af.width * outputCanvas.width;
-        //     rh = modelCrop.h / af.height * outputCanvas.height;
-        //   } else {
-        //     rx = modelCrop.x * outputCanvas.width;
-        //     ry = modelCrop.y * outputCanvas.height;
-        //     rw = modelCrop.w * outputCanvas.width;
-        //     rh = modelCrop.h * outputCanvas.height;
-        //   }
-        //   ctx.strokeStyle = '#00ff00';
-        //   ctx.lineWidth = 2;
-        //   ctx.strokeRect(rx, ry, rw, rh);
-        // }
+        const modelCrop = processor.getModelCropRegion();
+        if (modelCrop) {
+          const af = processor.getCropRect();
+          let rx, ry, rw, rh;
+          if (af && af.zoom > 1.02) {
+            rx = (modelCrop.x - af.x) / af.width * outputCanvas.width;
+            ry = (modelCrop.y - af.y) / af.height * outputCanvas.height;
+            rw = modelCrop.w / af.width * outputCanvas.width;
+            rh = modelCrop.h / af.height * outputCanvas.height;
+          } else {
+            rx = modelCrop.x * outputCanvas.width;
+            ry = modelCrop.y * outputCanvas.height;
+            rw = modelCrop.w * outputCanvas.width;
+            rh = modelCrop.h * outputCanvas.height;
+          }
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(rx, ry, rw, rh);
+        }
       }
 
       // Stats
