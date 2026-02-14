@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+### Features
+- Add `backgroundFixed` option — keeps virtual background stationary during auto-frame crop instead of panning/zooming with the subject (parallax). Applies to image and color background modes.
+
 ## 0.1.2
 
 ### Bug Fixes

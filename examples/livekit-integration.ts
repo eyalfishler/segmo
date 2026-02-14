@@ -29,6 +29,7 @@ const processor = new SegmentationProcessor({
   adaptive: true,                // auto-adjusts quality to device
   useWorker: true,               // off-main-thread inference (0ms main thread)
   debug: false,                  // set true to log metrics
+  backgroundFixed: false,        // true = bg stays fixed during auto-frame (no parallax)
   autoFrame: { enabled: false }, // enable later if wanted
   adaptiveConfig: {
     onQualityChange: (level, reason) => {

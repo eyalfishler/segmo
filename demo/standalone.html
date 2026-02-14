@@ -175,6 +175,11 @@
       <label>Auto-Frame</label>
       <button id="btnAutoFrame">Off</button>
     </div>
+
+    <div class="control-group">
+      <label>Fixed BG</label>
+      <button id="btnFixedBg">Off</button>
+    </div>
   </div>
 
   <div class="controls" id="imagePanel" style="display:none;">
@@ -319,8 +324,8 @@
       // All in WebGL2 shaders — zero CPU pixel pushing.
        const output = processor.processFrame(srcVideo, t0);
 
+      const ctx = outputCanvas.getContext('2d');
       if (output) {
-        const ctx = outputCanvas.getContext('2d');
         ctx.drawImage(output, 0, 0);
 
         // Debug: draw model ROI crop rectangle (green)
@@ -343,6 +348,9 @@
         //   ctx.lineWidth = 2;
         //   ctx.strokeRect(rx, ry, rw, rh);
         // }
+      } else {
+        // 'none' mode — draw raw camera feed
+        ctx.drawImage(srcVideo, 0, 0, outputCanvas.width, outputCanvas.height);
       }
 
       // Stats
@@ -446,6 +454,14 @@
       const btn = document.getElementById('btnAutoFrame');
       const on = btn.textContent === 'Off';
       if (processor) processor.setAutoFrame(on, true); // continuous tracking
+      btn.textContent = on ? 'On' : 'Off';
+      btn.classList.toggle('active', on);
+    });
+
+    document.getElementById('btnFixedBg').addEventListener('click', () => {
+      const btn = document.getElementById('btnFixedBg');
+      const on = btn.textContent === 'Off';
+      if (processor) processor.setBackgroundFixed(on);
       btn.textContent = on ? 'On' : 'Off';
       btn.classList.toggle('active', on);
     });

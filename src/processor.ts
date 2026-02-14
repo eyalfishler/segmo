@@ -61,6 +61,8 @@ export interface SegmentationProcessorOptions {
   autoFrame?: AutoFrameConfig;
   /** Run model inference in a Web Worker (frees main thread, default: false) */
   useWorker?: boolean;
+  /** Keep background fixed in screen space during auto-frame (default: false) */
+  backgroundFixed?: boolean;
 }
 
 // Quality presets tuned by hand
@@ -174,6 +176,7 @@ export class SegmentationProcessor {
       adaptiveConfig: {},
       autoFrame: {},
       useWorker: false,
+      backgroundFixed: false,
       ...options,
     };
 
@@ -258,6 +261,7 @@ export class SegmentationProcessor {
       disappearRate: preset.disappearRate,
       featherRadius: preset.featherRadius,
       rangeSigma: preset.rangeSigma,
+      backgroundFixed: this.opts.backgroundFixed,
     });
 
     this.initialized = true;
@@ -625,6 +629,12 @@ export class SegmentationProcessor {
   setBackgroundImage(image: HTMLImageElement): void {
     this.opts.backgroundImage = image;
     this.pipeline?.updateOptions({ backgroundImage: image, backgroundMode: 'image' });
+  }
+
+  /** Set whether background stays fixed during auto-frame crop */
+  setBackgroundFixed(fixed: boolean): void {
+    this.opts.backgroundFixed = fixed;
+    this.pipeline?.updateOptions({ backgroundFixed: fixed });
   }
 
   /** Set blur radius */

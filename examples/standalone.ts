@@ -57,6 +57,21 @@ async function main() {
     processor.setBackgroundMode('none');
   });
 
+  // 5b. Fixed background with auto-frame
+  // When backgroundFixed is true, the virtual background stays stationary
+  // while auto-frame pans/zooms only the subject — no parallax effect.
+  document.getElementById('btn-fixed-bg')?.addEventListener('click', () => {
+    const fixedProcessor = new SegmentationProcessor({
+      backgroundMode: 'image',
+      useWorker: true,
+      backgroundFixed: true,
+      autoFrame: { enabled: true, continuous: true },
+    });
+    const img = new Image();
+    img.src = '/backgrounds/mountains.jpg';
+    img.onload = () => fixedProcessor.setBackgroundImage(img);
+  });
+
   // 6. Monitor performance
   setInterval(() => {
     const m = processor.getMetrics();
