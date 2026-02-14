@@ -706,6 +706,13 @@ export class SegmentationProcessor {
     const t = this.interpFrameCount;
     const amp = 1.0; // velocities are in full-frame normalized space (~0.01 during movement)
     const vx = this.maskVx[0] * 0.6 + this.maskVx[1] * 0.3 + this.maskVx[2] * 0.1;
+
+    // Dead zone: ignore noise-level velocity to prevent jitter on interpolated frames
+    const deadZone = 0.003; // ~4px at 1280px — below this is model noise, not real movement
+    if (Math.abs(vx) < deadZone && Math.abs(this.maskVy) < deadZone) {
+      return { dx: 0, dy: 0 };
+    }
+
     let dx = vx * t * amp;
     let dy = this.maskVy * t * amp;
     const maxShift = 0.12;

@@ -90,7 +90,7 @@ export class AutoFramer {
       headroom: config.headroom ?? 0.15,
       padding: config.padding ?? 0.1,
       smoothing: config.smoothing ?? 0.75,
-      maxZoom: config.maxZoom ?? 1.4,
+      maxZoom: config.maxZoom ?? 4.4,
       minZoom: config.minZoom ?? 1.10,
       continuous: config.continuous ?? true,
       deadZone: config.deadZone ?? 0.03,
