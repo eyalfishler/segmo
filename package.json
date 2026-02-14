@@ -7,19 +7,30 @@
   "keywords": [
     "segmentation",
     "background-removal",
+    "background-replacement",
+    "background-blur",
+    "virtual-background",
     "video-conferencing",
+    "video-matting",
+    "video-processing",
     "livekit",
     "mediapipe",
-    "webgl",
-    "virtual-background",
-    "background-blur",
-    "video-matting",
-    "webrtc"
+    "webgl2",
+    "gpu-accelerated",
+    "webrtc",
+    "real-time",
+    "auto-framing",
+    "alpha-matting",
+    "media-stream",
+    "track-processor",
+    "web-worker"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/eyalfishler/segmo"
   },
+  "homepage": "https://github.com/eyalfishler/segmo#readme",
+  "bugs": "https://github.com/eyalfishler/segmo/issues",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -38,10 +49,9 @@
   },
   "files": [
     "dist",
-    "demo",
-    "examples",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "sideEffects": false,
   "scripts": {
@@ -49,13 +59,12 @@
     "dev": "tsup --watch",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
+    "test": "echo \"No tests yet\" && exit 0",
     "prepublishOnly": "npm run build",
     "clean": "rm -rf dist"
   },
-  "dependencies": {
-    "@mediapipe/tasks-vision": "^0.10.32"
-  },
   "peerDependencies": {
+    "@mediapipe/tasks-vision": "^0.10.32",
     "livekit-client": ">=2.0.0"
   },
   "peerDependenciesMeta": {

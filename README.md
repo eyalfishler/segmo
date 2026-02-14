@@ -2,7 +2,7 @@
 
 > Near Google Meet-quality background segmentation for video conferencing.
 
-Lightweight MediaPipe model + multi-stage GPU post-processing pipeline with alpha matting, temporal smoothing, edge-aware upsampling, and adaptive quality. Drops into LiveKit, WebRTC, or any `MediaStreamTrack`.
+Lightweight MediaPipe model + multi-stage GPU post-processing pipeline with alpha matting, temporal smoothing, motion compensation, edge-aware upsampling, and adaptive quality. Drops into LiveKit, WebRTC, or any `MediaStreamTrack`.
 
 ## What it does
 
@@ -12,6 +12,12 @@ Takes your webcam feed and produces smooth, artifact-free background blur/replac
 
 ```bash
 npm install segmo
+```
+
+`@mediapipe/tasks-vision` is a peer dependency — install it alongside:
+
+```bash
+npm install segmo @mediapipe/tasks-vision
 ```
 
 ## Quick Start
@@ -24,36 +30,157 @@ Drop-in replacement for `@livekit/track-processors`. Implements the official `Tr
 import { SegmentationProcessor } from 'segmo';
 import { Room, createLocalVideoTrack } from 'livekit-client';
 
-// 1. Create processor
 const processor = new SegmentationProcessor({
   backgroundMode: 'blur',
-  useWorker: true,  // off-main-thread inference
+  useWorker: true,
 });
 
-// 2. Create video track and attach processor
-const videoTrack = await createLocalVideoTrack({
-  resolution: { width: 1280, height: 720, frameRate: 30 },
-});
+const videoTrack = await createLocalVideoTrack();
 await videoTrack.setProcessor(processor.toLiveKitProcessor());
 
-// 3. Connect and publish
+const room = new Room();
+await room.connect(serverUrl, token);
+await room.localParticipant.publishTrack(videoTrack);
+```
+
+#### Switching modes at runtime
+
+All background settings can be changed without stopping or re-attaching the processor:
+
+```ts
+// Switch to blur
+processor.setBackgroundMode('blur');
+processor.setBlurRadius(14);
+
+// Switch to virtual background
+const img = new Image();
+img.src = '/backgrounds/office.jpg';
+img.onload = () => processor.setBackgroundImage(img);
+
+// Switch to solid color
+processor.setBackgroundMode('color');
+processor.setBackgroundColor('#1a1a2e');
+
+// Disable (passthrough — no processing, no GPU cost)
+processor.setBackgroundMode('none');
+```
+
+#### Toggling on/off without artifacts
+
+Like `@livekit/track-processors`, calling `setProcessor` / `stopProcessor` repeatedly can cause brief visual artifacts during the switch. A smoother approach is to keep the processor attached and toggle via `setBackgroundMode('none')`:
+
+```ts
+// Attach once at startup
+const videoTrack = await createLocalVideoTrack();
+const processor = new SegmentationProcessor({
+  backgroundMode: 'none',  // start disabled
+  useWorker: true,
+});
+await videoTrack.setProcessor(processor.toLiveKitProcessor());
+room.localParticipant.publishTrack(videoTrack);
+
+// Enable/disable without reattaching
+function enableBlur(radius = 12) {
+  processor.setBackgroundMode('blur');
+  processor.setBlurRadius(radius);
+}
+
+function disableBlur() {
+  processor.setBackgroundMode('none');
+}
+```
+
+#### Virtual background with Web Worker
+
+Off-main-thread inference keeps the UI thread free (~0ms blocking). Background images need to be loaded before being passed to the processor:
+
+```ts
+import { SegmentationProcessor } from 'segmo';
+import { Room, createLocalVideoTrack } from 'livekit-client';
+
+// Load background image
+const bgImage = new Image();
+bgImage.crossOrigin = 'anonymous';
+bgImage.src = '/backgrounds/office.jpg';
+await new Promise((resolve) => (bgImage.onload = resolve));
+
+// Create processor with worker + virtual background
+const processor = new SegmentationProcessor({
+  backgroundMode: 'image',
+  backgroundImage: bgImage,
+  useWorker: true,  // inference off main thread
+});
+
+const videoTrack = await createLocalVideoTrack();
+await videoTrack.setProcessor(processor.toLiveKitProcessor());
+
 const room = new Room();
 await room.connect(serverUrl, token);
 await room.localParticipant.publishTrack(videoTrack);
 
-// 4. Switch modes at runtime (no re-initialization needed)
-processor.setBackgroundMode('blur');
-processor.setBlurRadius(14);
-processor.setBackgroundMode('color');
-processor.setBackgroundColor('#1a1a2e');
+// Swap background image at runtime
+const newBg = new Image();
+newBg.crossOrigin = 'anonymous';
+newBg.src = '/backgrounds/beach.jpg';
+newBg.onload = () => processor.setBackgroundImage(newBg);
+```
 
-// 5. Stop processing
+#### Auto-framing
+
+Keeps the subject centered and well-framed, like Google Meet's automatic framing. The crop is rendered on the GPU — no CPU overhead:
+
+```ts
+const processor = new SegmentationProcessor({
+  backgroundMode: 'blur',
+  useWorker: true,
+  autoFrame: {
+    enabled: true,
+    continuous: true,  // keep adjusting (default when virtual bg enabled)
+  },
+});
+
+const videoTrack = await createLocalVideoTrack();
+await videoTrack.setProcessor(processor.toLiveKitProcessor());
+
+// Toggle at runtime
+processor.setAutoFrame(true);   // enable
+processor.setAutoFrame(false);  // disable (resets to full frame)
+
+// Read current crop (useful for custom UI overlays)
+const crop = processor.getCropRect();
+// { x: 0.1, y: 0.05, width: 0.8, height: 0.9, zoom: 1.3 }
+
+// Fine-tune via the AutoFramer instance
+const framer = processor.getAutoFramer();
+framer.updateConfig({
+  maxZoom: 2.0,      // limit zoom (default: 4.4)
+  smoothing: 0.85,   // slower tracking (default: 0.75)
+  headroom: 0.2,     // more space above head (default: 0.15)
+});
+```
+
+#### Stopping and cleanup
+
+```ts
+// Stop the processor (detaches from track)
 await videoTrack.stopProcessor();
 
-// 6. Clean up
+// Release all GPU/worker resources
 processor.destroy();
+
 await room.disconnect();
 ```
+
+#### Migration from `@livekit/track-processors`
+
+| `@livekit/track-processors` | `segmo` |
+|-----|-----|
+| `BackgroundProcessor({ mode: 'background-blur' })` | `new SegmentationProcessor({ backgroundMode: 'blur' })` |
+| `BackgroundProcessor({ mode: 'virtual-background', imagePath })` | `new SegmentationProcessor({ backgroundMode: 'image' })` + `setBackgroundImage(img)` |
+| `BackgroundProcessor({ mode: 'disabled' })` | `new SegmentationProcessor({ backgroundMode: 'none' })` |
+| `processor.switchTo({ mode: 'background-blur', blurRadius })` | `processor.setBackgroundMode('blur')` + `processor.setBlurRadius(radius)` |
+| `videoTrack.setProcessor(processor)` | `videoTrack.setProcessor(processor.toLiveKitProcessor())` |
+| `videoTrack.stopProcessor()` | `videoTrack.stopProcessor()` (same) |
 
 ### Without LiveKit
 
@@ -96,16 +223,16 @@ All switchable at runtime — no re-initialization.
 ## Architecture
 
 ```
-Camera (30fps render loop, matched to model)
+Camera (30fps output, model at 15fps default)
   │
   ├──▶ ROI Crop ── person bbox from previous mask → tighter model input (~2x resolution)
-  │         │       dead zone + smoothing prevents jitter feedback
+  │         │       dead zone (3% position, 1.5% size) + 50% smoothing prevents jitter
   │         ▼
-  ├──▶ MediaPipe Selfie Segmenter (CPU WASM+SIMD, 30fps ultra, 256x256)
-  │         │
+  ├──▶ MediaPipe Selfie Segmenter (CPU WASM+SIMD, 256x256 square model)
+  │         │       adaptive model rate: up to 4x faster during motion
   │         ▼
   │    [Stage 1] Temporal Smoothing ── motion-aware hysteresis (branchless)
-  │         │                          0.95 disappear rate for fast trailing fade
+  │         │                          asymmetric appear/disappear rates
   │         ▼
   │    [Stage 1.5] Morphological Closing ── dilate→erode, fills holes
   │         │
@@ -130,7 +257,7 @@ Camera (30fps render loop, matched to model)
   │                               distance-adaptive zoom, smooth tracking
   │
   ▼
-Output (30fps, matched to model — zero interpolation at ultra)
+Output (30fps — interpolated frames use motion-compensated mask shift)
 ```
 
 ### Pipeline Stages in Detail
@@ -143,6 +270,14 @@ Output (30fps, matched to model — zero interpolation at ultra)
 
 **Stability:** A dead zone prevents jitter feedback — position changes below 3% are ignored (prevents crop→mask→crop oscillation), while size changes above 1.5% are tracked (responds to distance changes). Transitions use 50% exponential smoothing.
 
+#### Motion Compensation
+
+**Problem:** The model runs at 15fps by default but output is 30fps. On interpolated frames, the mask is stale — if the person moves, the mask lags behind.
+
+**Solution:** 3-zone centroid velocity tracking splits the person into top/mid/bottom bands and tracks horizontal movement independently per zone (head moves differently than torso). EMA-smoothed velocity (α=0.8) predicts where the person has moved, and a GPU mask shift shader translates the stale mask to the predicted position.
+
+**Adaptive model rate:** During movement, the model runs up to 4x faster (capped at 16ms interval) to reduce mask lag. Velocity magnitude drives the speedup via `motionSpeedup = min(4.0, 1.0 + motionMag * 20)`.
+
 #### Stage 1: Temporal Smoothing
 
 **Problem:** The model's raw output flickers frame-to-frame — a pixel might be 0.7 one frame, 0.4 the next, 0.8 after that. This creates distracting shimmer on edges.
@@ -154,10 +289,11 @@ smoothed = mix(previous, current, alpha)
 alpha = current > previous ? appearRate : disappearRate
 ```
 
-- `appearRate` = 0.7 (foreground appears quickly — responsive tracking)
-- `disappearRate` = 0.3 (foreground disappears slowly — stable edges)
+Default rates (medium quality):
+- `appearRate` = 0.75 (foreground appears quickly — responsive tracking)
+- `disappearRate` = 0.35 (foreground disappears slowly — stable edges)
 
-**Motion awareness:** When the per-pixel motion map (|current - previous|) detects movement, rates are adjusted via `smoothstep(0.03, 0.2, motion)`:
+**Motion awareness:** When the per-pixel motion map detects movement, rates are adjusted via `smoothstep(0.03, 0.2, motion)`:
 - Appear rate → 0.98 (near-instant tracking of fast movement)
 - Disappear rate → 0.95 (fast fade for vacated pixels, kills trailing/ghosting)
 
@@ -282,9 +418,9 @@ uv = cropOffset + texCoord × cropSize
 ```
 
 The crop rectangle is computed from the segmentation mask's bounding box with:
-- **Distance-adaptive zoom:** `zoom = targetFill / actualFill` (target 90% fill, min 1.2x, max 1.5x)
-- **Vertical centering:** `vertOffset = 0.55 + (1 - fillRatio) × 0.03` (head higher in frame when further away)
-- **Exponential smoothing:** 0.75 factor (~100ms tracking) prevents camera swim
+- **Distance-adaptive zoom:** `zoom = targetFill / actualFill` (target 80% fill, clamped to 1.1x–4.4x)
+- **Head-aware framing:** head top positioned with 15% headroom
+- **Exponential smoothing:** 0.75 factor for stable tracking
 
 Zero CPU overhead — no canvas copy, just a single extra GPU draw call.
 
@@ -292,11 +428,12 @@ Zero CPU overhead — no canvas copy, just a single extra GPU draw call.
 
 | Technique | Savings |
 |-----------|---------|
-| 30fps render loop matched to model — zero interpolation overhead | No wasted frames or stale masks |
+| Model at 15fps, output at 30fps — motion-compensated interpolation fills gaps | Half the model runs per second |
+| Adaptive model rate — up to 4x faster during motion, throttled when still | Model budget matches actual need |
 | ROI cropping — person bbox from previous mask crops model input | ~2x more resolution on edges without larger model |
 | CPU inference (WASM+SIMD+XNNPACK), GPU free for rendering | No GPU contention |
 | 256x256 model input | 14x fewer pixels than 1280x720 |
-| Background blur at half resolution with multi-pass Gaussian | 4x fewer blur pixels |
+| Background blur at half resolution with 3-pass separable Gaussian | 4x fewer blur pixels |
 | All post-processing in WebGL2 fragment shaders | Zero CPU pixel readback |
 | Auto-frame via GPU crop shader (no CPU canvas copy) | Zero-cost centering/zoom |
 | Branchless shaders (step/mix instead of if/else) | No warp divergence |
@@ -305,6 +442,7 @@ Zero CPU overhead — no canvas copy, just a single extra GPU draw call.
 | Early-exit in feather shader (90%+ non-edge pixels skip 25-tap blur) | Coherent branch, massive savings |
 | `inversesqrt()` instead of `length()`+division | Hardware-accelerated normalization |
 | `dot()` instead of `length()` for comparisons | Avoids sqrt where magnitude isn't needed |
+| Motion-compensated mask shift on GPU | Stale mask tracks person movement between model frames |
 
 ### Why it looks good
 
@@ -313,6 +451,7 @@ Zero CPU overhead — no canvas copy, just a single extra GPU draw call.
 | ROI cropping (person bounding box) | ~2x model resolution on person edges — sharper boundaries |
 | Temporal smoothing with hysteresis | No flickering — fast appear, slow disappear |
 | Motion-aware blend rates | Fast movement tracks instantly, still areas maximally smooth |
+| 3-zone velocity tracking + mask shift | Mask follows person between model frames — no edge lag |
 | Morphological closing (dilate→erode) | Fills mask holes, smooths jagged edges |
 | Chroma-weighted bilateral upsample | Low-res mask edges snap to RGB boundaries; 3x chroma weight distinguishes skin from white backgrounds |
 | Selective edge feathering | Soft edges without blurring the interior |
@@ -327,15 +466,15 @@ Zero CPU overhead — no canvas copy, just a single extra GPU draw call.
 
 On by default. Monitors frame times and auto-adjusts:
 
-| Tier | Model | FPS | Morphology | Light Wrap |
-|------|-------|-----|------------|------------|
-| ultra | 256x256 | 30 | yes | yes |
-| high | 256x256 | 24 | yes | yes |
-| medium | 256x256 | 12 | yes | yes |
-| low | 160x160 | 10 | no | no |
-| minimal | 160x160 | 8 | no | no |
+| Tier | Model | FPS | Feather | Range σ | Blur | Morphology | Light Wrap |
+|------|-------|-----|---------|---------|------|------------|------------|
+| ultra | 256x256 | 30 | 1.5 | 0.08 | 12 | yes | yes |
+| high | 256x256 | 24 | 3.0 | 0.10 | 12 | yes | yes |
+| medium | 256x256 | 12 | 2.5 | 0.12 | 10 | yes | yes |
+| low | 160x160 | 10 | 2.0 | 0.15 | 8 | no | no |
+| minimal | 160x160 | 8 | 1.5 | 0.20 | 6 | no | no |
 
-Downgrades fast (2 bad windows). Upgrades slow (5 good windows). 3 critical frames (>40ms) triggers immediate downgrade.
+Downgrades fast (2 bad windows of 30 frames). Upgrades slow (5 good windows). 3 critical frames (>40ms) triggers immediate downgrade. 1-second cooldown between adjustments.
 
 ```ts
 // Disable
@@ -369,7 +508,7 @@ const crop = processor.getCropRect();
 // { x: 0.1, y: 0.05, width: 0.8, height: 0.9, zoom: 1.2 }
 ```
 
-Uses segmentation mask to derive person bounding box, applies exponential smoothing for stable tracking. Distance-adaptive zoom (further = more zoom, targetFill 90%) keeps the subject well-framed. Rendered entirely on GPU via a crop shader — zero CPU overhead.
+Uses segmentation mask to derive person bounding box, applies exponential smoothing (0.75 factor) for stable tracking. Distance-adaptive zoom (target 80% fill, 1.1x–4.4x range) keeps the subject well-framed with 15% headroom above the head. Rendered entirely on GPU via a crop shader — zero CPU overhead.
 
 ## Performance
 
@@ -395,12 +534,13 @@ const m = processor.getMetrics();
 new SegmentationProcessor({
   backgroundMode: 'blur',           // 'blur' | 'image' | 'color' | 'none'
   blurRadius: 12,                   // 4-24
-  backgroundColor: '#1a1a2e',       // hex
+  backgroundColor: '#00FF00',       // hex
   backgroundImage: null,            // HTMLImageElement
   quality: 'medium',                // 'low' | 'medium' | 'high'
   adaptive: true,                   // auto quality scaling
-  useWorker: true,                  // off-main-thread inference (0ms main thread)
-  modelFps: 30,                     // inference rate (matched to render)
+  useWorker: false,                 // off-main-thread inference (0ms main thread)
+  modelFps: 15,                     // model inference rate
+  outputFps: 30,                    // output frame rate
   debug: false,                     // log metrics
   autoFrame: { enabled: false },    // auto-centering
   modelConfig: { delegate: 'CPU' }, // 'CPU' | 'GPU'
@@ -409,6 +549,8 @@ new SegmentationProcessor({
 
 | Method | Description |
 |--------|-------------|
+| `init(width, height)` | Initialize pipeline (called automatically by LiveKit/createProcessedTrack) |
+| `processFrame(frame, timestamp)` | Process a single video frame (returns OffscreenCanvas or null) |
 | `toLiveKitProcessor()` | Official LiveKit `TrackProcessor` (uses `processedTrack`) |
 | `createProcessedTrack(track)` | Standalone `MediaStreamTrack` (non-LiveKit) |
 | `setBackgroundMode(mode)` | Switch mode |
@@ -419,9 +561,20 @@ new SegmentationProcessor({
 | `setAutoFrame(on, continuous?)` | Toggle auto-centering |
 | `getMetrics()` | Performance data |
 | `getCropRect()` | Auto-frame crop |
+| `getModelCropRegion()` | Current ROI crop (debug) |
 | `getAdaptiveController()` | Quality controller |
 | `getAutoFramer()` | Auto-frame controller |
 | `destroy()` | Release resources |
+
+### Quality Presets
+
+Manual quality presets (used when `adaptive: false`):
+
+| Preset | Model | FPS | Morphology | Light Wrap | Blur |
+|--------|-------|-----|------------|------------|------|
+| high | 256x256 | 30 | yes | yes | 16 |
+| medium | 256x256 | 15 | yes | yes | 12 |
+| low | 160x160 | 10 | no | no | 8 |
 
 ### `PostProcessingPipeline`
 
@@ -444,7 +597,7 @@ const pipeline = new PostProcessingPipeline({
 });
 
 const output = pipeline.process(cameraFrame, maskData, motionMap);
-const interpolated = pipeline.processInterpolated(cameraFrame);
+const interpolated = pipeline.processInterpolated(cameraFrame, { dx: 0.01, dy: 0 });
 ```
 
 ## WebGL2 Shader Pipeline
@@ -458,6 +611,7 @@ All shaders are optimized for real-time GPU execution:
 - **`inversesqrt()`**: Hardware-optimized normalization without separate `length()` + division
 - **Cross-shaped sampling**: Alpha matting uses a 13-sample cross pattern (wider directional reach, fewer samples than a full grid)
 - **Color separation gating**: Matting auto-disables via `smoothstep()` when fg/bg colors are similar
+- **Mask shift shader**: GPU-side UV translation for motion compensation on interpolated frames
 
 ## Demos
 

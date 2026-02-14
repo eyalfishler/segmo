@@ -1,6 +1,7 @@
 dist/
 .DS_Store
 *.tsbuildinfo
+*.tgz
 firebase-debug.log
 .claude/
 
