@@ -244,12 +244,12 @@ All switchable at runtime — no re-initialization.
 ## Architecture
 
 ```
-Camera (30fps output, model at 15fps default)
+Camera (30fps output, model at quality-preset rate)
   │
   ├──▶ ROI Crop ── person bbox from previous mask → tighter model input (~2x resolution)
   │         │       dead zone (3% position, 1.5% size) + 50% smoothing prevents jitter
   │         ▼
-  ├──▶ MediaPipe Selfie Segmenter (CPU WASM+SIMD, 256x256 square model)
+  ├──▶ MediaPipe Selfie Segmenter (GPU with CPU fallback, 256x144 landscape model)
   │         │       adaptive model rate: up to 4x faster during motion
   │         ▼
   │    [Stage 1] Temporal Smoothing ── motion-aware hysteresis (branchless)
@@ -285,15 +285,15 @@ Output (30fps — interpolated frames use motion-compensated mask shift)
 
 #### ROI Cropping (pre-inference)
 
-**Problem:** The model sees the entire 1280x720 frame scaled to 256x256, so the person occupies maybe 40% of those pixels — edges are blurry at ~3px resolution.
+**Problem:** The model sees the entire 1280x720 frame scaled to 256x144, so the person occupies maybe 40% of those pixels — edges are blurry at ~3px resolution.
 
-**Solution:** Use the previous frame's segmentation mask to compute a person bounding box, then crop just that region and scale it to fill the full 256x256 input. The person's edges now get ~2x the pixel resolution.
+**Solution:** Use the previous frame's segmentation mask to compute a person bounding box, then crop just that region and scale it to fill the full 256x144 input. The person's edges now get ~2x the pixel resolution.
 
 **Stability:** A dead zone prevents jitter feedback — position changes below 3% are ignored (prevents crop→mask→crop oscillation), while size changes above 1.5% are tracked (responds to distance changes). Transitions use 50% exponential smoothing.
 
 #### Motion Compensation
 
-**Problem:** The model runs at 15fps by default but output is 30fps. On interpolated frames, the mask is stale — if the person moves, the mask lags behind.
+**Problem:** The model runs at a lower rate than 60fps output. On interpolated frames, the mask is stale — if the person moves, the mask lags behind.
 
 **Solution:** 3-zone centroid velocity tracking splits the person into top/mid/bottom bands and tracks horizontal movement independently per zone (head moves differently than torso). EMA-smoothed velocity (α=0.8) predicts where the person has moved, and a GPU mask shift shader translates the stale mask to the predicted position.
 
@@ -324,13 +324,13 @@ All branchless: `step()` selects the rate, `mix()` applies it. No GPU warp diver
 
 **Problem:** The mask has small holes (e.g., patterned clothing classified as background) and jagged edges from the low-resolution model.
 
-**Solution:** Dilate (max of 3x3 neighborhood) then erode (min of 3x3). This "closing" operation fills holes smaller than 1 pixel and smooths jagged boundaries. Operates at mask resolution (256x256 = 65K pixels), not full frame (1280x720 = 921K pixels), so it's cheap.
+**Solution:** Dilate (max of 3x3 neighborhood) then erode (min of 3x3). This "closing" operation fills holes smaller than 1 pixel and smooths jagged boundaries. Operates at mask resolution (256x144 = 37K pixels), not full frame (1280x720 = 921K pixels), so it's cheap.
 
 **Math:** `result = mix(max(result, sample), min(result, sample), operation)` — branchless dilate/erode via the `operation` uniform (0.0=dilate, 1.0=erode).
 
 #### Stage 2: Joint Bilateral Upsample
 
-**Problem:** The mask is 256x256 but the output is 1280x720. Naive bilinear upsampling creates blocky stair-step edges that don't align with the actual person boundary in the camera frame.
+**Problem:** The mask is 256x144 but the output is 1280x720. Naive bilinear upsampling creates blocky stair-step edges that don't align with the actual person boundary in the camera frame.
 
 **Solution:** Joint bilateral filter — a 5x5 kernel where each sample's weight depends on both spatial distance and color similarity to the center pixel in the full-resolution camera frame. Mask edges "snap" to actual RGB boundaries.
 
@@ -449,11 +449,11 @@ Zero CPU overhead — no canvas copy, just a single extra GPU draw call.
 
 | Technique | Savings |
 |-----------|---------|
-| Model at 15fps, output at 30fps — motion-compensated interpolation fills gaps | Half the model runs per second |
+| Model at preset rate, output at 60fps — motion-compensated interpolation fills gaps | Fraction of model runs per output frame |
 | Adaptive model rate — up to 4x faster during motion, throttled when still | Model budget matches actual need |
 | ROI cropping — person bbox from previous mask crops model input | ~2x more resolution on edges without larger model |
-| CPU inference (WASM+SIMD+XNNPACK), GPU free for rendering | No GPU contention |
-| 256x256 model input | 14x fewer pixels than 1280x720 |
+| GPU inference with CPU fallback, Web Worker offloads main thread | Zero main-thread inference cost |
+| 256x144 landscape model input | 25x fewer pixels than 1280x720 |
 | Background blur at half resolution with 3-pass separable Gaussian | 4x fewer blur pixels |
 | All post-processing in WebGL2 fragment shaders | Zero CPU pixel readback |
 | Auto-frame via GPU crop shader (no CPU canvas copy) | Zero-cost centering/zoom |
@@ -489,9 +489,9 @@ On by default. Monitors frame times and auto-adjusts:
 
 | Tier | Model | FPS | Feather | Range σ | Blur | Morphology | Light Wrap |
 |------|-------|-----|---------|---------|------|------------|------------|
-| ultra | 256x256 | 30 | 1.5 | 0.08 | 12 | yes | yes |
-| high | 256x256 | 24 | 3.0 | 0.10 | 12 | yes | yes |
-| medium | 256x256 | 12 | 2.5 | 0.12 | 10 | yes | yes |
+| ultra | 256x144 | 30 | 1.5 | 0.08 | 12 | yes | yes |
+| high | 256x144 | 24 | 3.0 | 0.10 | 12 | yes | yes |
+| medium | 256x144 | 12 | 2.5 | 0.12 | 10 | yes | yes |
 | low | 160x160 | 10 | 2.0 | 0.15 | 8 | no | no |
 | minimal | 160x160 | 8 | 1.5 | 0.20 | 6 | no | no |
 
@@ -558,16 +558,20 @@ new SegmentationProcessor({
   backgroundColor: '#00FF00',       // hex
   backgroundImage: null,            // HTMLImageElement
   backgroundFixed: false,           // keep bg stationary during auto-frame
-  quality: 'medium',                // 'low' | 'medium' | 'high'
+  quality: 'medium',                // 'low' | 'medium' | 'high' | 'ultra'
   adaptive: true,                   // auto quality scaling
-  useWorker: false,                 // off-main-thread inference (0ms main thread)
-  modelFps: 15,                     // model inference rate
+  useWorker: true,                  // off-main-thread inference (0ms main thread)
+  modelFps: 0,                      // 0 = use quality preset rate
   outputFps: 30,                    // output frame rate
   debug: false,                     // log metrics
   autoFrame: { enabled: false },    // auto-centering
-  modelConfig: { delegate: 'CPU' }, // 'CPU' | 'GPU'
+  modelConfig: { delegate: 'GPU' }, // 'GPU' | 'CPU' (auto-fallback)
 })
 ```
+
+| Static Method | Description |
+|---------------|-------------|
+| `checkCapabilities()` | Pre-flight browser check — returns `{ supported, unsupportedReasons, capabilities, warnings }` |
 
 | Method | Description |
 |--------|-------------|
@@ -595,8 +599,9 @@ Manual quality presets (used when `adaptive: false`):
 
 | Preset | Model | FPS | Morphology | Light Wrap | Blur |
 |--------|-------|-----|------------|------------|------|
-| high | 256x256 | 30 | yes | yes | 16 |
-| medium | 256x256 | 15 | yes | yes | 12 |
+| ultra | 256x144 | 30 | yes | yes | 12 |
+| high | 256x144 | 24 | yes | yes | 12 |
+| medium | 256x144 | 12 | yes | yes | 10 |
 | low | 160x160 | 10 | no | no | 8 |
 
 ### `PostProcessingPipeline`
@@ -608,7 +613,7 @@ import { PostProcessingPipeline } from 'segmo';
 
 const pipeline = new PostProcessingPipeline({
   width: 1280, height: 720,
-  maskWidth: 256, maskHeight: 256,
+  maskWidth: 256, maskHeight: 144,
   backgroundMode: 'blur',
   blurRadius: 12,
   appearRate: 0.75,
@@ -646,17 +651,32 @@ npx serve .
 The standalone demo includes:
 - Camera selection
 - All background modes (blur, color, image, none)
-- Quality controls (Auto, Low, Med, High)
+- Quality controls (Auto, Low, Med, High, Ultra)
 - Background image presets (procedurally generated)
+- Persistent camera selection (remembered across sessions)
 - Custom image upload
 - Auto-frame toggle
 - Real-time performance metrics (FPS, model FPS, pipeline time, quality tier)
 
 ## Browser Support
 
-Chrome 97+, Edge 97+, Firefox 105+, Safari 16.4+
+Chrome 97+, Edge 97+, Firefox 105+, Safari 16.4+.
 
-Requires: WebGL2, `EXT_color_buffer_float`, `OES_texture_float_linear`, MediaPipe WASM
+Requires: WebGL2, `EXT_color_buffer_float`, OffscreenCanvas.
+
+Chrome/Edge use Insertable Streams (zero-copy, lowest latency). Firefox/Safari use a canvas `captureStream()` fallback automatically — no code changes needed.
+
+Use `SegmentationProcessor.checkCapabilities()` to validate before starting:
+
+```ts
+const caps = SegmentationProcessor.checkCapabilities();
+if (!caps.supported) {
+  console.error('Unsupported:', caps.unsupportedReasons);
+}
+if (caps.warnings.length) {
+  console.warn('Warnings:', caps.warnings);
+}
+```
 
 ## License
 

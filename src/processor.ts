@@ -34,6 +34,105 @@ import { ModelWorkerClient } from './model-worker';
 
 export type BackgroundMode = 'blur' | 'image' | 'color' | 'none';
 
+// === Diagnostics types ===
+
+export type DiagnosticsLevel = 'off' | 'summary';
+
+export interface DiagnosticEvent {
+  timestamp: number;
+  clientId: string | null;
+  type: 'summary' | 'init';
+  data: DiagnosticSummary | DiagnosticInit;
+}
+
+export interface DiagnosticInit {
+  resolution: { width: number; height: number };
+  modelResolution: { width: number; height: number };
+  useWorker: boolean;
+  modelDelegate: string;
+  quality: string;
+  autoFrame: boolean;
+  backgroundMode: string;
+  userAgent: string;
+  platform: string;
+  hardwareConcurrency: number;
+  deviceMemory: number | null;
+  devicePixelRatio: number;
+  screenResolution: { width: number; height: number };
+  gpu: string;
+  gpuVendor: string;
+  maxTextureSize: number;
+  maxRenderbufferSize: number;
+  webglVersion: string;
+  shadingLanguageVersion: string;
+  connectionType: string | null;
+  connectionEffectiveType: string | null;
+  connectionDownlink: number | null;
+}
+
+export interface DiagnosticSummary {
+  fps: number;
+  modelFps: number;
+  avgModelMs: number;
+  avgPipelineMs: number;
+  avgTotalMs: number;
+  p95TotalMs: number;
+  droppedFrames: number;
+  qualityTier: number;
+  qualityLabel: string;
+  roiCrop: { x: number; y: number; w: number; h: number } | null;
+  autoFrameZoom: number;
+  maskCoverage: number;
+  bboxAtEdgeCount: number;
+  maskEmptyCount: number;
+  webglContextLost: boolean;
+  /** Base64 JPEG of processed output (only when diagnosticsIncludeImage is true) */
+  image: string | null;
+  /** Debug log messages accumulated during this interval */
+  logs: string[];
+}
+
+export interface DiagnosticSnapshot {
+  clientId: string | null;
+  init: DiagnosticInit | null;
+  metrics: PerformanceMetrics;
+  roiCrop: { x: number; y: number; w: number; h: number } | null;
+  autoFrameCrop: { x: number; y: number; w: number; h: number; zoom: number };
+  qualityTier: number;
+  qualityLabel: string;
+  maskCoverage: number;
+  motionVector: { vx: [number, number, number]; vy: number };
+  bboxAtEdgeCount: number;
+  uptime: number;
+  /** Base64 JPEG of processed output (only when diagnosticsIncludeImage is true) */
+  image: string | null;
+  /** Debug log messages */
+  logs: string[];
+}
+
+/** Result of SegmentationProcessor.checkCapabilities() */
+export interface CapabilityCheckResult {
+  /** True if all hard requirements are met — segmo will work */
+  supported: boolean;
+  /** Human-readable reasons why segmo is not supported (empty if supported) */
+  unsupportedReasons: string[];
+  /** Individual capability checks */
+  capabilities: {
+    offscreenCanvas: boolean;
+    webgl2: boolean;
+    extColorBufferFloat: boolean;
+    mediaStreamTrackProcessor: boolean;
+    mediaStreamTrackGenerator: boolean;
+    videoFrame: boolean;
+    transformStream: boolean;
+    oesTextureFloatLinear: boolean;
+    webWorkers: boolean;
+    createImageBitmap: boolean;
+  };
+  /** Warnings for soft requirements that are missing (non-blocking) */
+  warnings: string[];
+}
+
 export interface SegmentationProcessorOptions {
   /** Background mode */
   backgroundMode?: BackgroundMode;
@@ -50,7 +149,7 @@ export interface SegmentationProcessorOptions {
   /** Model configuration overrides */
   modelConfig?: ModelConfig;
   /** Pipeline quality presets */
-  quality?: 'low' | 'medium' | 'high';
+  quality?: 'low' | 'medium' | 'high' | 'ultra';
   /** Enable performance metrics logging */
   debug?: boolean;
   /** Enable adaptive quality (auto-adjusts to device performance, default: true) */
@@ -63,6 +162,16 @@ export interface SegmentationProcessorOptions {
   useWorker?: boolean;
   /** Keep background fixed in screen space during auto-frame (default: false) */
   backgroundFixed?: boolean;
+  /** Diagnostics callback — receives periodic summary and init events */
+  onDiagnostic?: (event: DiagnosticEvent) => void;
+  /** Diagnostics level: 'off' or 'summary' (default: 'off') */
+  diagnosticsLevel?: DiagnosticsLevel;
+  /** Interval in ms between summary diagnostic events (default: 5000) */
+  diagnosticsIntervalMs?: number;
+  /** Include a low-res JPEG screenshot in diagnostic events (default: false) */
+  diagnosticsIncludeImage?: boolean;
+  /** Client identifier included in every diagnostic event (default: null) */
+  clientId?: string | null;
 }
 
 // Quality presets tuned by hand
@@ -80,6 +189,18 @@ const QUALITY_PRESETS = {
     modelFps: 10,
   },
   medium: {
+    appearRate: 0.8,
+    disappearRate: 0.4,
+    featherRadius: 2.5,
+    rangeSigma: 0.12,
+    lightWrap: true,
+    morphology: true,
+    blurRadius: 10,
+    modelWidth: 256,
+    modelHeight: 144,
+    modelFps: 12,
+  },
+  high: {
     appearRate: 0.75,
     disappearRate: 0.35,
     featherRadius: 3.0,
@@ -88,19 +209,19 @@ const QUALITY_PRESETS = {
     morphology: true,
     blurRadius: 12,
     modelWidth: 256,
-    modelHeight: 256,
-    modelFps: 15,
+    modelHeight: 144,
+    modelFps: 24,
   },
-  high: {
+  ultra: {
     appearRate: 0.7,
-    disappearRate: 0.3,
-    featherRadius: 4.0,
+    disappearRate: 0.35,
+    featherRadius: 1.5,
     rangeSigma: 0.08,
     lightWrap: true,
     morphology: true,
-    blurRadius: 16,
+    blurRadius: 12,
     modelWidth: 256,
-    modelHeight: 256,
+    modelHeight: 144,
     modelFps: 30,
   },
 };
@@ -154,6 +275,7 @@ export class SegmentationProcessor {
   private workerMask: Float32Array | null = null;
   private workerMotion: Float32Array | null = null;
   private workerBBox: { minX: number; minY: number; maxX: number; maxY: number } | null = null;
+  private workerInferenceMs = 0;
   private workerHasFreshMask = false;
 
   // Mask motion compensation: 3-zone velocity prediction
@@ -161,13 +283,119 @@ export class SegmentationProcessor {
   private maskVy = 0;
   private interpFrameCount = 0;
 
+  // Diagnostics
+  private diagLevel: DiagnosticsLevel = 'off';
+  private diagTimer: ReturnType<typeof setInterval> | null = null;
+  private diagInitTime = 0;
+  private diagBBoxAtEdgeCount = 0;
+  private diagMaskEmptyCount = 0;
+  private diagMaskCoverageAccum = 0;
+  private diagMaskCoverageCount = 0;
+  private diagModelMsAccum = 0;
+  private diagModelFrameCount = 0;
+  private diagPipelineMsAccum = 0;
+  private diagTotalMsAccum = 0;
+  private diagTotalMsWindow: number[] = [];
+  private diagFrameCount = 0;
+  private diagInitData: DiagnosticInit | null = null;
+  private diagLastMaskCoverage = 0;
+  private diagLastOutput: OffscreenCanvas | null = null;
+  private diagCaptureCanvas: HTMLCanvasElement | null = null;
+  private diagLogs: string[] = [];
+
+  /**
+   * Check browser capabilities required by segmo.
+   * Call before constructing a processor to verify the browser supports all required APIs.
+   * Synchronous, no side effects (cleans up test resources).
+   */
+  static checkCapabilities(): CapabilityCheckResult {
+    const unsupportedReasons: string[] = [];
+    const warnings: string[] = [];
+
+    // Hard: OffscreenCanvas
+    const offscreenCanvas = typeof OffscreenCanvas !== 'undefined';
+    if (!offscreenCanvas) {
+      unsupportedReasons.push('OffscreenCanvas is not available — required for WebGL2 rendering pipeline.');
+    }
+
+    // Hard: WebGL2 + extensions (create a test context and clean up)
+    let webgl2 = false;
+    let extColorBufferFloat = false;
+    let oesTextureFloatLinear = false;
+
+    if (offscreenCanvas) {
+      try {
+        const testCanvas = new OffscreenCanvas(1, 1);
+        const gl = testCanvas.getContext('webgl2');
+        if (gl) {
+          webgl2 = true;
+          extColorBufferFloat = gl.getExtension('EXT_color_buffer_float') !== null;
+          oesTextureFloatLinear = gl.getExtension('OES_texture_float_linear') !== null;
+          gl.getExtension('WEBGL_lose_context')?.loseContext();
+        }
+      } catch { /* WebGL2 creation threw */ }
+    }
+
+    if (!webgl2) {
+      unsupportedReasons.push('WebGL2 is not available — required for GPU post-processing pipeline.');
+    }
+    if (webgl2 && !extColorBufferFloat) {
+      unsupportedReasons.push('WebGL2 extension EXT_color_buffer_float is not available — required for RGBA16F framebuffer rendering.');
+    }
+
+    // Soft: Insertable Streams / WebCodecs (enables zero-copy path; canvas fallback used otherwise)
+    const mediaStreamTrackProcessor = typeof MediaStreamTrackProcessor !== 'undefined';
+    const mediaStreamTrackGenerator = typeof MediaStreamTrackGenerator !== 'undefined';
+    const videoFrame = typeof VideoFrame !== 'undefined';
+    const transformStream = typeof TransformStream !== 'undefined';
+
+    if (!mediaStreamTrackProcessor || !mediaStreamTrackGenerator) {
+      warnings.push('Insertable Streams not available — using canvas captureStream fallback (slightly higher latency).');
+    }
+
+    // Soft: OES_texture_float_linear
+    if (webgl2 && !oesTextureFloatLinear) {
+      warnings.push('OES_texture_float_linear missing — mask edges may appear blockier.');
+    }
+
+    // Soft: Web Workers
+    const webWorkers = typeof Worker !== 'undefined';
+    if (!webWorkers) {
+      warnings.push('Web Workers not available — model inference will run on the main thread.');
+    }
+
+    // Soft: createImageBitmap
+    const hasCreateImageBitmap = typeof createImageBitmap !== 'undefined';
+    if (!hasCreateImageBitmap) {
+      warnings.push('createImageBitmap not available — worker-based inference (useWorker: true) will not work.');
+    }
+
+    return {
+      supported: unsupportedReasons.length === 0,
+      unsupportedReasons,
+      capabilities: {
+        offscreenCanvas,
+        webgl2,
+        extColorBufferFloat,
+        mediaStreamTrackProcessor,
+        mediaStreamTrackGenerator,
+        videoFrame,
+        transformStream,
+        oesTextureFloatLinear,
+        webWorkers,
+        createImageBitmap: hasCreateImageBitmap,
+      },
+      warnings,
+    };
+  }
+
   constructor(options: SegmentationProcessorOptions = {}) {
     this.opts = {
       backgroundMode: 'blur',
       blurRadius: 12,
       backgroundColor: '#00FF00',
       backgroundImage: null,
-      modelFps: 15,
+      modelFps: 0,
       outputFps: 30,
       modelConfig: {},
       quality: 'medium',
@@ -177,11 +405,17 @@ export class SegmentationProcessor {
       autoFrame: {},
       useWorker: false,
       backgroundFixed: false,
+      onDiagnostic: () => { },
+      diagnosticsLevel: 'off',
+      diagnosticsIntervalMs: 5000,
+      diagnosticsIncludeImage: false,
+      clientId: null,
       ...options,
     };
 
-    this.qualityPreset = QUALITY_PRESETS[this.opts.quality];
+    this.qualityPreset = QUALITY_PRESETS[this.opts.quality] ?? QUALITY_PRESETS.high;
     this.modelInterval = 1000 / (this.opts.modelFps || this.qualityPreset.modelFps);
+    this.diagLevel = this.opts.diagnosticsLevel;
 
     // Initialize auto-framer
     this.autoFramer = new AutoFramer(this.opts.autoFrame);
@@ -194,6 +428,7 @@ export class SegmentationProcessor {
       });
 
       this.adaptive.onApply((level: QualityLevel) => {
+        this.diagLog(`quality-change: tier=${level.tier} label=${level.label} modelFps=${level.modelFps}`);
         this.modelInterval = 1000 / level.modelFps;
         this.pipeline?.updateOptions({
           appearRate: level.appearRate,
@@ -201,6 +436,8 @@ export class SegmentationProcessor {
           featherRadius: level.featherRadius,
           rangeSigma: level.rangeSigma,
           blurRadius: level.blurRadius,
+          lightWrap: level.lightWrap,
+          morphology: level.morphology,
         });
       });
     }
@@ -214,6 +451,15 @@ export class SegmentationProcessor {
     // Coerce to positive integers — OffscreenCanvas requires unsigned long
     width = Math.max(1, Math.round(width) || 1280);
     height = Math.max(1, Math.round(height) || 720);
+
+    // Pre-flight capability check — fail fast with clear diagnostics
+    const caps = SegmentationProcessor.checkCapabilities();
+    if (!caps.supported) {
+      const reasons = caps.unsupportedReasons.join('\n  - ');
+      throw new Error(
+        `[segmo] Browser does not meet minimum requirements:\n  - ${reasons}\n\nCall SegmentationProcessor.checkCapabilities() for details.`
+      );
+    }
 
     // Clean up previous init (e.g., camera switch triggers re-init)
     if (this.workerClient) {
@@ -232,13 +478,16 @@ export class SegmentationProcessor {
     this.width = width;
     this.height = height;
 
+    // Initialize diagnostics early so this.log() captures lifecycle events
+    this.diagInitTime = performance.now();
+
     const preset = this.qualityPreset;
 
     // Initialize model (skip MediaPipe load when worker handles inference)
     this.model = new SegmentationModel({
       outputWidth: preset.modelWidth,
       outputHeight: preset.modelHeight,
-      delegate: 'CPU',
+      delegate: 'GPU',
       ...this.opts.modelConfig,
     });
     if (!this.opts.useWorker) {
@@ -294,23 +543,29 @@ export class SegmentationProcessor {
         this.workerClient = new ModelWorkerClient({
           outputWidth: preset.modelWidth,
           outputHeight: preset.modelHeight,
-          delegate: 'CPU',
+          delegate: 'GPU',
           ...this.opts.modelConfig,
         });
         this.workerClient.onMaskReady((result) => {
           this.workerMask = result.mask;
           this.workerMotion = result.motion;
           this.workerBBox = result.bbox;
+          this.workerInferenceMs = result.inferenceMs;
           this.workerHasFreshMask = true;
         });
         await this.workerClient.init();
         this.log('Worker initialized — inference runs off main thread');
       } catch (e) {
         this.log('Worker init failed, falling back to main thread', { error: String(e) });
+        this.diagLog(`worker-fallback: ${String(e)}`);
         this.workerClient?.destroy();
         this.workerClient = null;
       }
     }
+
+    // Start periodic diagnostics emission
+    this.startDiagnostics();
+    this.diagLog(`init: ${width}x${height} model=${this.model!.maskWidth}x${this.model!.maskHeight} worker=${this.opts.useWorker} quality=${this.opts.quality}`);
   }
 
   /**
@@ -369,7 +624,8 @@ export class SegmentationProcessor {
         this.autoFramer.updateFromMask(
           this.workerMask, this.model.maskWidth, this.model.maskHeight,
         );
-        // Update centroid tracking from worker mask (model.segment() isn't called in worker path)
+        // Update model state from worker results (model.segment() isn't called in worker path)
+        this.model.updateBBoxFromExternal(this.workerBBox);
         if (this.workerBBox) {
           this.model.updateCentroidFromExternal(this.workerMask, this.workerBBox);
         }
@@ -384,14 +640,16 @@ export class SegmentationProcessor {
         //   console.log(`[Motion] vx=[${mv.vx[0].toFixed(4)}, ${mv.vx[1].toFixed(4)}, ${mv.vx[2].toFixed(4)}] vy=${mv.vy.toFixed(4)} | model frame`);
         // }
 
+        this.collectDiagFromMask(this.workerMask);
         const pipelineStart = performance.now();
         output = this.pipeline.process(frame, this.workerMask, this.workerMotion);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
-        this.metrics.modelInferenceMs = 0;
+        this.metrics.modelInferenceMs = this.workerInferenceMs;
       } else {
         // Interpolate with accumulating motion-compensated shift
         this.skippedFrames++;
         this.interpFrameCount++;
+        this.metrics.modelInferenceMs = 0;
         const pipelineStart = performance.now();
         output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
         this.metrics.pipelineMs = performance.now() - pipelineStart;
@@ -436,11 +694,13 @@ export class SegmentationProcessor {
         //   console.log(`[Motion] vx=[${mv.vx[0].toFixed(4)}, ${mv.vx[1].toFixed(4)}, ${mv.vx[2].toFixed(4)}] vy=${mv.vy.toFixed(4)} | model frame`);
         // }
 
+        this.collectDiagFromMask(mask);
         const pipelineStart = performance.now();
         output = this.pipeline.process(frame, mask, motionMap);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       } else {
         this.interpFrameCount++;
+        this.metrics.modelInferenceMs = 0;
         const pipelineStart = performance.now();
         output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
         this.metrics.pipelineMs = performance.now() - pipelineStart;
@@ -449,6 +709,7 @@ export class SegmentationProcessor {
       // Not time for model — interpolate with motion-compensated mask
       this.skippedFrames++;
       this.interpFrameCount++;
+      this.metrics.modelInferenceMs = 0;
       const pipelineStart = performance.now();
       output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
       this.metrics.pipelineMs = performance.now() - pipelineStart;
@@ -456,6 +717,7 @@ export class SegmentationProcessor {
 
     this.metrics.totalFrameMs = performance.now() - frameStart;
     this.frameCount++;
+    this.collectDiagTiming();
 
     // Feed frame time to adaptive quality controller
     if (this.adaptive) {
@@ -466,6 +728,7 @@ export class SegmentationProcessor {
       this.logMetrics();
     }
 
+    if (this.opts.diagnosticsIncludeImage) this.diagLastOutput = output;
     return output;
   }
 
@@ -580,7 +843,18 @@ export class SegmentationProcessor {
     const settings = inputTrack.getSettings();
     await this.init(settings.width || 1280, settings.height || 720);
 
-    // Use Insertable Streams (WebCodecs) if available
+    // Prefer Insertable Streams (zero-copy, lowest latency) when available
+    if (typeof MediaStreamTrackProcessor !== 'undefined' &&
+        typeof MediaStreamTrackGenerator !== 'undefined') {
+      return this.createProcessedTrackInsertable(inputTrack);
+    }
+
+    // Fallback: canvas captureStream (works in Safari, Firefox, and older Chrome)
+    return this.createProcessedTrackCanvas(inputTrack);
+  }
+
+  /** Insertable Streams path — Chrome/Edge only, zero-copy */
+  private createProcessedTrackInsertable(inputTrack: MediaStreamTrack): MediaStreamTrack {
     const trackProcessor = new MediaStreamTrackProcessor({ track: inputTrack });
     const trackGenerator = new MediaStreamTrackGenerator({ kind: 'video' });
 
@@ -607,6 +881,60 @@ export class SegmentationProcessor {
       .pipeTo(trackGenerator.writable);
 
     return trackGenerator as unknown as MediaStreamTrack;
+  }
+
+  /** Canvas captureStream path — cross-browser fallback (Safari, Firefox) */
+  private createProcessedTrackCanvas(inputTrack: MediaStreamTrack): MediaStreamTrack {
+    const settings = inputTrack.getSettings();
+    const w = settings.width || 1280;
+    const h = settings.height || 720;
+
+    // Hidden video element to read frames from the input track
+    const video = document.createElement('video');
+    video.srcObject = new MediaStream([inputTrack]);
+    video.muted = true;
+    video.playsInline = true;
+    video.play();
+
+    // Output canvas for captureStream
+    const outputCanvas = document.createElement('canvas');
+    outputCanvas.width = w;
+    outputCanvas.height = h;
+    const ctx = outputCanvas.getContext('2d')!;
+
+    const fps = settings.frameRate || 30;
+    const outputStream = outputCanvas.captureStream(fps);
+    const outputTrack = outputStream.getVideoTracks()[0];
+
+    let running = true;
+
+    const drawFrame = () => {
+      if (!running || inputTrack.readyState === 'ended') return;
+
+      if (video.readyState >= video.HAVE_CURRENT_DATA) {
+        const timestamp = performance.now();
+        const output = this.processFrame(video, timestamp);
+        if (output) {
+          ctx.drawImage(output, 0, 0);
+        } else {
+          ctx.drawImage(video, 0, 0, w, h);
+        }
+      }
+
+      requestAnimationFrame(drawFrame);
+    };
+
+    video.addEventListener('playing', () => drawFrame());
+
+    // Clean up when output track is stopped
+    const origStop = outputTrack.stop.bind(outputTrack);
+    outputTrack.stop = () => {
+      running = false;
+      video.srcObject = null;
+      origStop();
+    };
+
+    return outputTrack;
   }
 
   // === Runtime configuration ===
@@ -644,7 +972,7 @@ export class SegmentationProcessor {
   }
 
   /** Change quality preset */
-  setQuality(quality: 'low' | 'medium' | 'high'): void {
+  setQuality(quality: 'low' | 'medium' | 'high' | 'ultra'): void {
     this.opts.quality = quality;
     this.qualityPreset = QUALITY_PRESETS[quality];
     this.modelInterval = 1000 / this.qualityPreset.modelFps;
@@ -701,6 +1029,10 @@ export class SegmentationProcessor {
 
   /** Clean up all resources */
   destroy(): void {
+    if (this.diagTimer) {
+      clearInterval(this.diagTimer);
+      this.diagTimer = null;
+    }
     this.pipeline?.destroy();
     this.model?.destroy();
     this.workerClient?.destroy();
@@ -713,7 +1045,250 @@ export class SegmentationProcessor {
     this.initialized = false;
   }
 
+  // === Diagnostics ===
+
+  /** Change diagnostics level at runtime */
+  setDiagnosticsLevel(level: DiagnosticsLevel): void {
+    this.diagLevel = level;
+    if (this.initialized) {
+      this.startDiagnostics();
+    }
+  }
+
+  /** Get an on-demand diagnostic snapshot (works regardless of diagnosticsLevel) */
+  exportDiagnosticSnapshot(): DiagnosticSnapshot {
+    const crop = this.autoFramer.getCurrentCrop();
+    const level = this.adaptive?.getCurrentLevel();
+    return {
+      clientId: this.opts.clientId ?? null,
+      init: this.diagInitData,
+      metrics: { ...this.metrics },
+      roiCrop: this.personCropRegion ? { ...this.personCropRegion } : null,
+      autoFrameCrop: { x: crop.x, y: crop.y, w: crop.width, h: crop.height, zoom: crop.zoom },
+      qualityTier: level?.tier ?? -1,
+      qualityLabel: level?.label ?? this.opts.quality ?? 'unknown',
+      maskCoverage: this.diagLastMaskCoverage,
+      motionVector: { vx: [...this.maskVx] as [number, number, number], vy: this.maskVy },
+      bboxAtEdgeCount: this.diagBBoxAtEdgeCount,
+      uptime: performance.now() - this.diagInitTime,
+      image: this.captureDiagImage(),
+      logs: [...this.diagLogs],
+    };
+  }
+
   // === Private helpers ===
+
+  /** Start or restart diagnostics timer based on current level */
+  private startDiagnostics(): void {
+    // Clear existing timer
+    if (this.diagTimer) {
+      clearInterval(this.diagTimer);
+      this.diagTimer = null;
+    }
+
+    // Capture init data (once)
+    if (!this.diagInitData && this.pipeline && this.model) {
+      const glInfo = this.pipeline.getWebGLInfo();
+      const nav = typeof navigator !== 'undefined' ? navigator : null;
+      const scr = typeof screen !== 'undefined' ? screen : null;
+      const conn = nav && 'connection' in nav ? (nav as any).connection : null;
+      this.diagInitData = {
+        resolution: { width: this.width, height: this.height },
+        modelResolution: { width: this.model.maskWidth, height: this.model.maskHeight },
+        useWorker: this.opts.useWorker,
+        modelDelegate: this.workerClient
+          ? this.workerClient.actualDelegate
+          : this.model.actualDelegate,
+        quality: this.opts.quality,
+        autoFrame: !!this.opts.autoFrame?.enabled,
+        backgroundMode: this.opts.backgroundMode,
+        userAgent: nav?.userAgent ?? 'unknown',
+        platform: (nav as any)?.userAgentData?.platform ?? nav?.platform ?? 'unknown',
+        hardwareConcurrency: nav?.hardwareConcurrency ?? 0,
+        deviceMemory: (nav as any)?.deviceMemory ?? null,
+        devicePixelRatio: typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1,
+        screenResolution: { width: scr?.width ?? 0, height: scr?.height ?? 0 },
+        gpu: glInfo.renderer,
+        gpuVendor: glInfo.vendor,
+        maxTextureSize: glInfo.maxTextureSize,
+        maxRenderbufferSize: glInfo.maxRenderbufferSize,
+        webglVersion: glInfo.version,
+        shadingLanguageVersion: glInfo.shadingLanguageVersion,
+        connectionType: conn?.type ?? null,
+        connectionEffectiveType: conn?.effectiveType ?? null,
+        connectionDownlink: conn?.downlink ?? null,
+      };
+    }
+
+    if (this.diagLevel === 'off') return;
+
+    // Emit init event
+    if (this.diagInitData) {
+      this.opts.onDiagnostic({
+        timestamp: Date.now(),
+        clientId: this.opts.clientId ?? null,
+        type: 'init',
+        data: this.diagInitData,
+      });
+    }
+
+    // Reset accumulators
+    this.resetDiagAccumulators();
+
+    // Start summary timer
+    this.diagTimer = setInterval(() => {
+      this.emitDiagSummary();
+    }, this.opts.diagnosticsIntervalMs);
+  }
+
+  /** Emit a diagnostic summary event and reset accumulators */
+  private emitDiagSummary(): void {
+    // Skip if no frames were processed (e.g. tab was backgrounded)
+    if (this.diagFrameCount === 0) return;
+    const level = this.adaptive?.getCurrentLevel();
+    const crop = this.autoFramer.getCurrentCrop();
+    const avgModel = this.diagModelFrameCount > 0 ? this.diagModelMsAccum / this.diagModelFrameCount : 0;
+    const avgPipeline = this.diagFrameCount > 0 ? this.diagPipelineMsAccum / this.diagFrameCount : 0;
+    const avgTotal = this.diagFrameCount > 0 ? this.diagTotalMsAccum / this.diagFrameCount : 0;
+    const avgCoverage = this.diagMaskCoverageCount > 0
+      ? this.diagMaskCoverageAccum / this.diagMaskCoverageCount : 0;
+
+    // Compute p95 from frame time window
+    let p95 = 0;
+    if (this.diagTotalMsWindow.length > 0) {
+      const sorted = [...this.diagTotalMsWindow].sort((a, b) => a - b);
+      p95 = sorted[Math.floor(sorted.length * 0.95)];
+    }
+
+    const summary: DiagnosticSummary = {
+      fps: this.metrics.fps,
+      modelFps: this.metrics.modelFps,
+      avgModelMs: avgModel,
+      avgPipelineMs: avgPipeline,
+      avgTotalMs: avgTotal,
+      p95TotalMs: p95,
+      droppedFrames: this.metrics.skippedFrames,
+      qualityTier: level?.tier ?? -1,
+      qualityLabel: level?.label ?? this.opts.quality ?? 'unknown',
+      roiCrop: this.personCropRegion ? { ...this.personCropRegion } : null,
+      autoFrameZoom: crop.zoom,
+      maskCoverage: avgCoverage,
+      bboxAtEdgeCount: this.diagBBoxAtEdgeCount,
+      maskEmptyCount: this.diagMaskEmptyCount,
+      webglContextLost: this.pipeline?.isContextLost() ?? false,
+      image: this.captureDiagImage(),
+      logs: [...this.diagLogs],
+    };
+
+    this.opts.onDiagnostic({
+      timestamp: Date.now(),
+      clientId: this.opts.clientId ?? null,
+      type: 'summary',
+      data: summary,
+    });
+
+    this.resetDiagAccumulators();
+  }
+
+  /** Reset diagnostics accumulators between summary intervals */
+  private resetDiagAccumulators(): void {
+    this.diagBBoxAtEdgeCount = 0;
+    this.diagMaskEmptyCount = 0;
+    this.diagMaskCoverageAccum = 0;
+    this.diagMaskCoverageCount = 0;
+    this.diagModelMsAccum = 0;
+    this.diagModelFrameCount = 0;
+    this.diagPipelineMsAccum = 0;
+    this.diagTotalMsAccum = 0;
+    this.diagTotalMsWindow = [];
+    this.diagFrameCount = 0;
+    this.diagLogs = [];
+  }
+
+  /** Collect diagnostics data from a model frame (mask produced) */
+  private collectDiagFromMask(mask: Float32Array | null): void {
+    if (this.diagLevel === 'off') return;
+    if (!mask) {
+      this.diagMaskEmptyCount++;
+      return;
+    }
+
+    // Mask coverage: count person pixels
+    let personPixels = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (mask[i] > 0.5) personPixels++;
+    }
+    const coverage = personPixels / mask.length;
+    this.diagLastMaskCoverage = coverage;
+    this.diagMaskCoverageAccum += coverage;
+    this.diagMaskCoverageCount++;
+
+    if (personPixels === 0) {
+      this.diagMaskEmptyCount++;
+      this.diagLog(`mask-empty: no person detected (0/${mask.length} pixels)`);
+    }
+
+    // Bbox-at-edge detection: is the person touching the ROI crop boundary?
+    if (this.personCropRegion && this.model) {
+      const rawBBox = this.model.getPersonBBox(0); // no padding — raw detection boundary
+      if (rawBBox) {
+        const crop = this.personCropRegion;
+        const edgeThreshold = 0.02;
+        const touchesLeft = rawBBox.x < crop.x + edgeThreshold;
+        const touchesTop = rawBBox.y < crop.y + edgeThreshold;
+        const touchesRight = (rawBBox.x + rawBBox.w) > (crop.x + crop.w - edgeThreshold);
+        const touchesBottom = (rawBBox.y + rawBBox.h) > (crop.y + crop.h - edgeThreshold);
+        if (touchesLeft || touchesTop || touchesRight || touchesBottom) {
+          this.diagBBoxAtEdgeCount++;
+        }
+      }
+    }
+  }
+
+  /** Log a debug message to both console and diagnostics stream */
+  private diagLog(msg: string): void {
+    if (this.diagLevel === 'off') return;
+    const entry = `[${(performance.now() - this.diagInitTime).toFixed(0)}ms] ${msg}`;
+    console.log(`[segmo] ${msg}`);
+    this.diagLogs.push(entry);
+    // Cap log buffer to prevent unbounded growth
+    if (this.diagLogs.length > 500) this.diagLogs.shift();
+  }
+
+  /** Capture a low-res JPEG from the last processed output (sync, ~1ms) */
+  private captureDiagImage(): string | null {
+    if (!this.opts.diagnosticsIncludeImage || !this.diagLastOutput) return null;
+    try {
+      // Reuse a small canvas for capture (320px wide, preserving aspect ratio)
+      const src = this.diagLastOutput;
+      const scale = Math.min(1, 320 / src.width);
+      const w = Math.round(src.width * scale);
+      const h = Math.round(src.height * scale);
+      if (!this.diagCaptureCanvas) {
+        this.diagCaptureCanvas = document.createElement('canvas');
+      }
+      this.diagCaptureCanvas.width = w;
+      this.diagCaptureCanvas.height = h;
+      const ctx = this.diagCaptureCanvas.getContext('2d')!;
+      ctx.drawImage(src, 0, 0, w, h);
+      return this.diagCaptureCanvas.toDataURL('image/jpeg', 0.5);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Accumulate frame timing for diagnostics */
+  private collectDiagTiming(): void {
+    if (this.diagLevel === 'off') return;
+    if (this.metrics.modelInferenceMs > 0) {
+      this.diagModelMsAccum += this.metrics.modelInferenceMs;
+      this.diagModelFrameCount++;
+    }
+    this.diagPipelineMsAccum += this.metrics.pipelineMs;
+    this.diagTotalMsAccum += this.metrics.totalFrameMs;
+    this.diagTotalMsWindow.push(this.metrics.totalFrameMs);
+    this.diagFrameCount++;
+  }
 
   /** 3-zone constant-velocity shift, weighted by zone importance.
    * Head zone 60%, mid 30%, bottom 10%.
@@ -819,5 +1394,8 @@ export class SegmentationProcessor {
     if (this.opts.debug) {
       console.log(`[Segmentation] ${msg}`, data || '');
     }
+    // Always capture in diagnostics (even if debug=false)
+    const detail = data ? ` ${JSON.stringify(data)}` : '';
+    this.diagLog(`${msg}${detail}`);
   }
 }

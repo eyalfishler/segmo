@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.4
+
+### Features
+- Add `checkCapabilities()` static method — pre-flight browser validation for WebGL2, OffscreenCanvas, Insertable Streams, and required extensions. Returns structured report with hard requirements and soft warnings.
+- Add `ultra` quality preset (30fps model, full pipeline features)
+- GPU delegate for model inference (with automatic CPU fallback) — reports actual delegate via diagnostics
+- Report `modelDelegate` (GPU/CPU) in diagnostic init events
+- Web Worker inference now includes actual `inferenceMs` timing (was previously hardcoded to 0)
+
+### Bug Fixes
+- Fix model height default from 256 to 144 — matches the landscape model's native 16:9 resolution. Eliminates wasted compute on vertical padding and aspect ratio distortion.
+- Fix `modelFps` default overriding quality preset — was hardcoded to 15, now falls through to preset value (e.g., 30 for ultra)
+- Fix bbox-at-edge diagnostics not working in Web Worker mode — worker path now updates model's cached bbox
+- Fix platform detection using deprecated `navigator.platform` — now prefers `navigator.userAgentData.platform`
+- Split `connectionType` into `connectionType` (actual) and `connectionEffectiveType` (quality bucket) in diagnostics
+- Fix crash when setting `quality: 'ultra'` (preset didn't exist, caused undefined access)
+- Align static quality presets with adaptive quality tiers
+- Guard against empty diagnostic summaries when tab is backgrounded
+
+### Docs
+- Update README with ultra quality tier, capability checks, and corrected model resolution (256x144)
+
 ## 0.1.3
 
 ### Features

@@ -57,6 +57,8 @@ export interface QualityLevel {
   lightWrap: boolean;
   /** Background blur radius */
   blurRadius: number;
+  /** Morphological erosion/dilation for edge cleanup */
+  morphology: boolean;
   /** Temporal appear rate */
   appearRate: number;
   /** Temporal disappear rate */
@@ -71,10 +73,11 @@ const QUALITY_TIERS: QualityLevel[] = [
     label: 'ultra',
     modelFps: 30,
     modelWidth: 256,
-    modelHeight: 256,
+    modelHeight: 144,
     featherRadius: 1.5,
     rangeSigma: 0.08,
     lightWrap: true,
+    morphology: true,
     blurRadius: 12,
     appearRate: 0.7,
     disappearRate: 0.35,
@@ -84,10 +87,11 @@ const QUALITY_TIERS: QualityLevel[] = [
     label: 'high',
     modelFps: 24,
     modelWidth: 256,
-    modelHeight: 256,
+    modelHeight: 144,
     featherRadius: 3.0,
     rangeSigma: 0.1,
     lightWrap: true,
+    morphology: true,
     blurRadius: 12,
     appearRate: 0.75,
     disappearRate: 0.35,
@@ -97,10 +101,11 @@ const QUALITY_TIERS: QualityLevel[] = [
     label: 'medium',
     modelFps: 12,
     modelWidth: 256,
-    modelHeight: 256,
+    modelHeight: 144,
     featherRadius: 2.5,
     rangeSigma: 0.12,
     lightWrap: true,
+    morphology: true,
     blurRadius: 10,
     appearRate: 0.8,
     disappearRate: 0.4,
@@ -114,6 +119,7 @@ const QUALITY_TIERS: QualityLevel[] = [
     featherRadius: 2.0,
     rangeSigma: 0.15,
     lightWrap: false,
+    morphology: false,
     blurRadius: 8,
     appearRate: 0.85,
     disappearRate: 0.45,
@@ -127,6 +133,7 @@ const QUALITY_TIERS: QualityLevel[] = [
     featherRadius: 1.5,
     rangeSigma: 0.2,
     lightWrap: false,
+    morphology: false,
     blurRadius: 6,
     appearRate: 0.9,
     disappearRate: 0.5,

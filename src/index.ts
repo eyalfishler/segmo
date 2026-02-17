@@ -22,7 +22,16 @@
  */
 
 export { SegmentationProcessor } from './processor';
-export type { SegmentationProcessorOptions, BackgroundMode } from './processor';
+export type {
+  SegmentationProcessorOptions,
+  BackgroundMode,
+  DiagnosticsLevel,
+  DiagnosticEvent,
+  DiagnosticInit,
+  DiagnosticSummary,
+  DiagnosticSnapshot,
+  CapabilityCheckResult,
+} from './processor';
 
 export { PostProcessingPipeline } from './pipeline';
 export type { PipelineOptions } from './pipeline';

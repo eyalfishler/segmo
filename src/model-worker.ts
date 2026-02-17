@@ -38,7 +38,7 @@ async function init(cfg) {
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm'
   );
 
-  segmenter = await mp.ImageSegmenter.createFromOptions(vision, {
+  const opts = {
     baseOptions: {
       modelAssetPath: cfg.modelAssetPath,
       delegate: cfg.delegate,
@@ -46,12 +46,26 @@ async function init(cfg) {
     runningMode: 'VIDEO',
     outputCategoryMask: false,
     outputConfidenceMasks: true,
-  });
+  };
+
+  let actualDelegate = cfg.delegate;
+  try {
+    segmenter = await mp.ImageSegmenter.createFromOptions(vision, opts);
+  } catch (e) {
+    if (cfg.delegate === 'GPU') {
+      console.warn('[segmo worker] GPU delegate failed, falling back to CPU:', e);
+      opts.baseOptions.delegate = 'CPU';
+      segmenter = await mp.ImageSegmenter.createFromOptions(vision, opts);
+      actualDelegate = 'CPU';
+    } else {
+      throw e;
+    }
+  }
 
   resizeCanvas = new OffscreenCanvas(cfg.outputWidth, cfg.outputHeight);
   resizeCtx = resizeCanvas.getContext('2d', { willReadFrequently: true });
 
-  self.postMessage({ type: 'ready' });
+  self.postMessage({ type: 'ready', actualDelegate });
 }
 
 function segment(bitmap, timestamp, crop) {
@@ -79,6 +93,7 @@ function segment(bitmap, timestamp, crop) {
   // ImageData is universally supported and just raw pixels.
   const imageData = resizeCtx.getImageData(0, 0, ow, oh);
 
+  const modelStart = performance.now();
   let result;
   try {
     result = segmenter.segmentForVideo(imageData, timestamp);
@@ -89,6 +104,7 @@ function segment(bitmap, timestamp, crop) {
   if (!result.confidenceMasks || result.confidenceMasks.length === 0) return;
 
   const firstMask = result.confidenceMasks[0];
+  // getAsFloat32Array() forces GPU readback — must be inside timing window
   const firstData = firstMask.getAsFloat32Array();
   const pixelCount = firstData.length;
 
@@ -106,6 +122,7 @@ function segment(bitmap, timestamp, crop) {
     lastMask.set(maskData);
     if (mask !== firstMask) mask.close();
   }
+  const inferenceMs = performance.now() - modelStart;
 
   firstMask.close();
   for (let i = 1; i < result.confidenceMasks.length; i++) {
@@ -180,6 +197,7 @@ function segment(bitmap, timestamp, crop) {
     mask: outMask.buffer,
     motion: motion.buffer,
     bbox: bFound ? { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY } : null,
+    inferenceMs,
   }, [outMask.buffer, motion.buffer]);
 }
 
@@ -193,6 +211,7 @@ export interface WorkerMaskResult {
   mask: Float32Array;
   motion: Float32Array;
   bbox: { minX: number; minY: number; maxX: number; maxY: number } | null;
+  inferenceMs: number;
 }
 
 export class ModelWorkerClient {
@@ -201,14 +220,16 @@ export class ModelWorkerClient {
   private config: Required<ModelConfig>;
   private onMask: ((result: WorkerMaskResult) => void) | null = null;
   private blobUrl: string | null = null;
+  /** The delegate actually used (GPU may fall back to CPU) */
+  actualDelegate: 'GPU' | 'CPU' = 'CPU';
 
   constructor(config: ModelConfig) {
     this.config = {
-      modelAssetPath: config.modelAssetPath ||
+      modelAssetPath: config.modelAssetPath || 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite' ||
         'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
-      delegate: config.delegate || 'CPU',
+      delegate: config.delegate || 'GPU',
       outputWidth: config.outputWidth || 256,
-      outputHeight: config.outputHeight || 256,
+      outputHeight: config.outputHeight || 144,
     };
   }
 
@@ -232,6 +253,7 @@ export class ModelWorkerClient {
         this.worker.onmessage = (e) => {
           if (e.data.type === 'ready') {
             this.ready = true;
+            this.actualDelegate = e.data.actualDelegate ?? this.config.delegate;
             clearTimeout(timeout);
             resolve();
           } else if (e.data.type === 'mask') {
@@ -239,6 +261,7 @@ export class ModelWorkerClient {
               mask: new Float32Array(e.data.mask),
               motion: new Float32Array(e.data.motion),
               bbox: e.data.bbox,
+              inferenceMs: e.data.inferenceMs ?? 0,
             });
           }
         };

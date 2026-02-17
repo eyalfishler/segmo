@@ -8,22 +8,45 @@
  *   npm install segmo
  */
 
-import { SegmentationProcessor } from 'segmo';
+import { SegmentationProcessor, DiagnosticEvent } from 'segmo';
 
 async function main() {
+  // 0. Check browser capabilities
+  const caps = SegmentationProcessor.checkCapabilities();
+  if (!caps.supported) {
+    document.body.textContent = 'Browser not supported: ' + caps.unsupportedReasons.join('; ');
+    return;
+  }
+
   // 1. Get camera
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { width: 1280, height: 720, frameRate: 30 },
   });
   const inputTrack = stream.getVideoTracks()[0];
 
-  // 2. Create processor
+  // 2. Create processor with diagnostics
   const processor = new SegmentationProcessor({
     backgroundMode: 'blur',
     blurRadius: 14,
     adaptive: true,
     quality: 'medium',
     useWorker: true, // off-main-thread inference (0ms main thread)
+
+    // Diagnostics — collects periodic summaries, your app decides where to send them
+    diagnosticsLevel: 'summary',
+    diagnosticsIntervalMs: 10000,
+    diagnosticsIncludeImage: false,
+    clientId: 'user-123', // unique identifier for this client/session
+    onDiagnostic: (event: DiagnosticEvent) => {
+      console.log(`[diag] ${event.type}`, event.data);
+
+      // Send to your telemetry endpoint
+      fetch('/api/telemetry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(event),
+      });
+    },
   });
 
   // 3. Create processed track (Insertable Streams API)
@@ -72,14 +95,14 @@ async function main() {
     img.onload = () => fixedProcessor.setBackgroundImage(img);
   });
 
-  // 6. Monitor performance
-  setInterval(() => {
-    const m = processor.getMetrics();
-    console.log(
-      `FPS: ${m.fps} | Model: ${m.modelFps}fps @ ${m.modelInferenceMs.toFixed(1)}ms | ` +
-      `Total: ${m.totalFrameMs.toFixed(1)}ms`,
-    );
-  }, 3000);
+  // 6. On-demand snapshot (e.g. "Report Issue" button)
+  document.getElementById('btn-report')?.addEventListener('click', () => {
+    const snapshot = processor.exportDiagnosticSnapshot();
+    console.log('[diag] snapshot', snapshot);
+
+    // Send to your telemetry endpoint
+    // fetch('/api/telemetry/snapshot', { method: 'POST', body: JSON.stringify(snapshot) });
+  });
 
   // 7. Cleanup on page unload
   window.addEventListener('beforeunload', () => {

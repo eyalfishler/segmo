@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>segmo telemetry</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0f; color: #e0e0e0; min-height: 100vh;
+      display: flex;
+    }
+    .sidebar {
+      width: 260px; background: #111118; border-right: 1px solid #222;
+      padding: 16px; overflow-y: auto; flex-shrink: 0;
+    }
+    .sidebar h2 { font-size: 16px; color: #888; margin-bottom: 12px; }
+    .client-item {
+      padding: 10px 12px; border-radius: 8px; cursor: pointer;
+      margin-bottom: 4px; transition: background 0.15s;
+    }
+    .client-item:hover { background: #1a1a24; }
+    .client-item.active { background: #2a2a40; }
+    .client-name { font-size: 14px; font-weight: 600; }
+    .client-meta { font-size: 11px; color: #666; margin-top: 2px; }
+    .main { flex: 1; padding: 24px; overflow-y: auto; }
+    .main h1 { font-size: 22px; margin-bottom: 16px; }
+    .empty { color: #555; font-size: 14px; padding: 40px; text-align: center; }
+    .event-card {
+      background: #13131a; border: 1px solid #222; border-radius: 10px;
+      padding: 16px; margin-bottom: 12px;
+    }
+    .event-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .event-type {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 4px;
+    }
+    .event-type.init { background: #1a3a1a; color: #4caf50; }
+    .event-type.summary { background: #1a2a3a; color: #42a5f5; }
+    .event-type.snapshot { background: #3a2a1a; color: #ff9800; }
+    .event-time { font-size: 11px; color: #666; }
+    .metric-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 8px;
+    }
+    .metric {
+      background: #0a0a12; border-radius: 6px; padding: 8px 10px;
+    }
+    .metric-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.3px; }
+    .metric-value { font-size: 15px; font-weight: 600; margin-top: 2px; font-family: 'SF Mono', Monaco, monospace; }
+    .metric-value.warn { color: #ff9800; }
+    .metric-value.bad { color: #f44336; }
+    .metric-value.good { color: #4caf50; }
+    .logs-section { margin-top: 10px; }
+    .logs-section summary { font-size: 12px; color: #888; cursor: pointer; }
+    .log-line {
+      font-size: 11px; font-family: 'SF Mono', Monaco, monospace;
+      color: #aaa; padding: 1px 0;
+    }
+    .image-preview {
+      margin-top: 10px; border-radius: 6px; max-width: 320px;
+      border: 1px solid #333;
+    }
+    .info-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 6px; font-size: 12px;
+    }
+    .info-item { padding: 4px 0; }
+    .info-label { color: #666; }
+    .info-value { color: #ccc; font-family: 'SF Mono', Monaco, monospace; }
+    .refresh-btn {
+      padding: 6px 12px; border: 1px solid #333; border-radius: 6px;
+      background: #1a1a24; color: #e0e0e0; font-size: 12px; cursor: pointer;
+      margin-bottom: 12px;
+    }
+    .refresh-btn:hover { background: #252532; }
+  </style>
+</head>
+<body>
+  <div class="sidebar">
+    <h2>Clients</h2>
+    <div id="clientList"><div class="empty">Loading...</div></div>
+  </div>
+  <div class="main">
+    <div id="content"><div class="empty">Select a client to view telemetry</div></div>
+  </div>
+
+  <script>
+    const API = '';
+    let activeClient = null;
+    let refreshTimer = null;
+
+    async function loadClients() {
+      const res = await fetch(`${API}/api/telemetry/clients`);
+      const clients = await res.json();
+      const el = document.getElementById('clientList');
+
+      if (!clients.length) {
+        el.innerHTML = '<div class="empty">No telemetry data yet</div>';
+        return;
+      }
+
+      el.innerHTML = clients.map(c => `
+        <div class="client-item ${c.id === activeClient ? 'active' : ''}"
+             onclick="selectClient('${c.id}')">
+          <div class="client-name">${c.id}</div>
+          <div class="client-meta">${new Date(c.lastEvent).toLocaleString()} · ${(c.sizeBytes / 1024).toFixed(1)}KB</div>
+        </div>
+      `).join('');
+    }
+
+    async function selectClient(id) {
+      activeClient = id;
+      loadClients();
+      loadEvents(id);
+
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(() => loadEvents(id), 5000);
+    }
+
+    async function loadEvents(id) {
+      const res = await fetch(`${API}/api/telemetry/clients/${id}`);
+      const events = await res.json();
+      const el = document.getElementById('content');
+
+      el.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h1>${id}</h1>
+          <div>
+            <button class="refresh-btn" onclick="loadEvents('${id}')">Refresh</button>
+            <span style="font-size:12px;color:#666;">${events.length} events · auto-refreshing</span>
+          </div>
+        </div>
+        ${events.map(renderEvent).join('')}
+      `;
+    }
+
+    function renderEvent(event) {
+      const type = event.type || 'unknown';
+      const time = new Date(event.receivedAt || event.timestamp).toLocaleString();
+      const data = event.data || event;
+
+      let body = '';
+      if (type === 'init') body = renderInit(data);
+      else if (type === 'summary') body = renderSummary(data);
+      else if (type === 'snapshot') body = renderSnapshot(data.data || data);
+      else body = `<pre style="font-size:11px;color:#888;overflow:auto;max-height:300px;">${JSON.stringify(data, null, 2)}</pre>`;
+
+      return `
+        <div class="event-card">
+          <div class="event-header">
+            <span class="event-type ${type}">${type}</span>
+            <span class="event-time">${time}</span>
+          </div>
+          ${body}
+        </div>
+      `;
+    }
+
+    function renderInit(d) {
+      return `
+        <div class="info-grid">
+          ${infoItem('Resolution', `${d.resolution?.width}×${d.resolution?.height}`)}
+          ${infoItem('Model', `${d.modelResolution?.width}×${d.modelResolution?.height}`)}
+          ${infoItem('Worker', d.useWorker)}
+          ${infoItem('Model Delegate', d.modelDelegate || 'N/A')}
+          ${infoItem('Quality', d.quality)}
+          ${infoItem('Auto-Frame', d.autoFrame)}
+          ${infoItem('BG Mode', d.backgroundMode)}
+          ${infoItem('GPU', d.gpu)}
+          ${infoItem('GPU Vendor', d.gpuVendor)}
+          ${infoItem('WebGL', d.webglVersion)}
+          ${infoItem('Max Texture', d.maxTextureSize)}
+          ${infoItem('CPU Cores', d.hardwareConcurrency)}
+          ${infoItem('Memory', d.deviceMemory ? d.deviceMemory + 'GB' : 'N/A')}
+          ${infoItem('DPR', d.devicePixelRatio)}
+          ${infoItem('Screen', `${d.screenResolution?.width}×${d.screenResolution?.height}`)}
+          ${infoItem('Platform', d.platform)}
+          ${infoItem('Connection', d.connectionType || 'N/A')}
+          ${infoItem('Effective Type', d.connectionEffectiveType || 'N/A')}
+          ${infoItem('Downlink', d.connectionDownlink != null ? d.connectionDownlink + ' Mbps' : 'N/A')}
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#555;word-break:break-all;">${d.userAgent || ''}</div>
+      `;
+    }
+
+    function renderSummary(d) {
+      return `
+        <div class="metric-grid">
+          ${metric('FPS', d.fps, d.fps < 15 ? 'bad' : d.fps < 25 ? 'warn' : 'good')}
+          ${metric('Model FPS', d.modelFps)}
+          ${metric('Avg Model', d.avgModelMs?.toFixed(1) + 'ms')}
+          ${metric('Avg Pipeline', d.avgPipelineMs?.toFixed(1) + 'ms')}
+          ${metric('Avg Total', d.avgTotalMs?.toFixed(1) + 'ms', d.avgTotalMs > 40 ? 'bad' : d.avgTotalMs > 28 ? 'warn' : '')}
+          ${metric('P95 Total', d.p95TotalMs?.toFixed(1) + 'ms', d.p95TotalMs > 50 ? 'bad' : d.p95TotalMs > 35 ? 'warn' : '')}
+          ${metric('Quality', `${d.qualityLabel} (${d.qualityTier})`)}
+          ${metric('Mask Coverage', (d.maskCoverage * 100).toFixed(1) + '%', d.maskCoverage < 0.05 ? 'bad' : d.maskCoverage < 0.15 ? 'warn' : '')}
+          ${metric('BBox@Edge', d.bboxAtEdgeCount, d.bboxAtEdgeCount > 5 ? 'bad' : d.bboxAtEdgeCount > 0 ? 'warn' : '')}
+          ${metric('Mask Empty', d.maskEmptyCount, d.maskEmptyCount > 3 ? 'bad' : d.maskEmptyCount > 0 ? 'warn' : '')}
+          ${metric('Dropped', d.droppedFrames)}
+          ${metric('GL Lost', d.webglContextLost, d.webglContextLost ? 'bad' : '')}
+          ${metric('Auto-Frame Zoom', d.autoFrameZoom?.toFixed(2) + 'x')}
+        </div>
+        ${d.roiCrop ? `<div style="margin-top:8px;font-size:11px;color:#666;">ROI: x=${d.roiCrop.x.toFixed(2)} y=${d.roiCrop.y.toFixed(2)} w=${d.roiCrop.w.toFixed(2)} h=${d.roiCrop.h.toFixed(2)}</div>` : ''}
+        ${d.image ? `<img class="image-preview" src="${d.image}" />` : ''}
+        ${renderLogs(d.logs)}
+      `;
+    }
+
+    function renderSnapshot(d) {
+      return `
+        <div class="metric-grid">
+          ${metric('Quality', `${d.qualityLabel} (${d.qualityTier})`)}
+          ${metric('Mask Coverage', ((d.maskCoverage || 0) * 100).toFixed(1) + '%')}
+          ${metric('BBox@Edge', d.bboxAtEdgeCount)}
+          ${metric('Uptime', ((d.uptime || 0) / 1000).toFixed(0) + 's')}
+          ${metric('FPS', d.metrics?.fps)}
+          ${metric('Model FPS', d.metrics?.modelFps)}
+          ${metric('Model Ms', d.metrics?.modelInferenceMs?.toFixed(1) + 'ms')}
+          ${metric('Total Ms', d.metrics?.totalFrameMs?.toFixed(1) + 'ms')}
+        </div>
+        ${d.roiCrop ? `<div style="margin-top:8px;font-size:11px;color:#666;">ROI: x=${d.roiCrop.x.toFixed(2)} y=${d.roiCrop.y.toFixed(2)} w=${d.roiCrop.w.toFixed(2)} h=${d.roiCrop.h.toFixed(2)}</div>` : ''}
+        ${d.image ? `<img class="image-preview" src="${d.image}" />` : ''}
+        ${renderLogs(d.logs)}
+        ${d.init ? '<details style="margin-top:10px;"><summary style="font-size:12px;color:#888;cursor:pointer;">Init data</summary>' + renderInit(d.init) + '</details>' : ''}
+      `;
+    }
+
+    function metric(label, value, cls) {
+      return `<div class="metric"><div class="metric-label">${label}</div><div class="metric-value ${cls || ''}">${value ?? '-'}</div></div>`;
+    }
+
+    function infoItem(label, value) {
+      return `<div class="info-item"><span class="info-label">${label}:</span> <span class="info-value">${value ?? '-'}</span></div>`;
+    }
+
+    function renderLogs(logs) {
+      if (!logs || !logs.length) return '';
+      return `
+        <details class="logs-section">
+          <summary>${logs.length} log messages</summary>
+          <div style="margin-top:6px;max-height:200px;overflow-y:auto;">
+            ${logs.map(l => `<div class="log-line">${escapeHtml(l)}</div>`).join('')}
+          </div>
+        </details>
+      `;
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    loadClients();
+    setInterval(loadClients, 10000);
+  </script>
+</body>
+</html>

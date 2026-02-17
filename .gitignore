@@ -7,3 +7,7 @@ firebase-debug.log
 
 node_modules/
 node_modules/*
+
+# Telemetry server runtime files
+telemetry-server/node_modules/
+telemetry-server/data/

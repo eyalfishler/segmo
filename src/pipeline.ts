@@ -114,6 +114,9 @@ export class PostProcessingPipeline {
   // Auto-frame crop (set by processor, applied in final render)
   private cropRect: { x: number; y: number; w: number; h: number } | null = null;
 
+  // WebGL context loss tracking
+  private contextLost = false;
+
   constructor(options: PipelineOptions) {
     this.opts = {
       backgroundColor: '#00FF00',
@@ -142,6 +145,15 @@ export class PostProcessingPipeline {
 
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
+
+    // Track WebGL context loss/restore
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      (e as Event).preventDefault();
+      this.contextLost = true;
+    });
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+    });
 
     // Required for rendering to RGBA16F framebuffer textures
     gl.getExtension('EXT_color_buffer_float');
@@ -528,6 +540,32 @@ export class PostProcessingPipeline {
       gl.bindTexture(gl.TEXTURE_2D, this.backgroundTexture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, opts.backgroundImage);
     }
+  }
+
+  /** Get WebGL environment info for diagnostics */
+  getWebGLInfo(): {
+    renderer: string;
+    vendor: string;
+    version: string;
+    shadingLanguageVersion: string;
+    maxTextureSize: number;
+    maxRenderbufferSize: number;
+  } {
+    const gl = this.gl;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    return {
+      renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) as string : 'unknown',
+      vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) as string : 'unknown',
+      version: gl.getParameter(gl.VERSION) as string,
+      shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION) as string,
+      maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+      maxRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number,
+    };
+  }
+
+  /** Whether the WebGL context has been lost */
+  isContextLost(): boolean {
+    return this.contextLost;
   }
 
   /** Clean up all GPU resources */

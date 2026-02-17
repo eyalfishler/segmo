@@ -164,10 +164,11 @@
     <div class="control-group">
       <label>Quality</label>
       <div style="display:flex;gap:6px;">
-        <button id="btnAuto" class="active">Auto</button>
+        <button id="btnAuto">Auto</button>
         <button id="btnLow">Low</button>
         <button id="btnMedium">Med</button>
         <button id="btnHigh">High</button>
+        <button id="btnUltra" class="active">Ultra</button>
       </div>
     </div>
 
@@ -179,6 +180,14 @@
     <div class="control-group">
       <label>Fixed BG</label>
       <button id="btnFixedBg">Off</button>
+    </div>
+
+    <div class="control-group">
+      <label>Diagnostics</label>
+      <div style="display:flex;gap:6px;">
+        <button id="btnDiag" class="active">On</button>
+        <button id="btnSnapshot">Snapshot</button>
+      </div>
     </div>
   </div>
 
@@ -227,12 +236,16 @@
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cameras = devices.filter(d => d.kind === 'videoinput');
         cameraSelect.innerHTML = '';
+        const savedCameraId = localStorage.getItem('segmo-camera-id');
         cameras.forEach((cam, i) => {
           const opt = document.createElement('option');
           opt.value = cam.deviceId;
           opt.textContent = cam.label || `Camera ${i + 1}`;
           cameraSelect.appendChild(opt);
         });
+        if (savedCameraId && cameras.some(c => c.deviceId === savedCameraId)) {
+          cameraSelect.value = savedCameraId;
+        }
         if (!cameras.length) cameraSelect.innerHTML = '<option>No cameras</option>';
       } catch (e) {
         cameraSelect.innerHTML = '<option>Permission denied</option>';
@@ -244,6 +257,17 @@
 
     // --- Start / Stop ---
     async function start() {
+      // Pre-flight capability check
+      const caps = SegmentationProcessor.checkCapabilities();
+      if (!caps.supported) {
+        statusEl.textContent = 'Browser not supported: ' + caps.unsupportedReasons.join('; ');
+        console.error('[segmo] Unsupported browser:', caps.unsupportedReasons);
+        return;
+      }
+      if (caps.warnings.length > 0) {
+        console.warn('[segmo] Capability warnings:', caps.warnings);
+      }
+
       statusEl.textContent = 'Starting camera & loading model...';
 
       const deviceId = cameraSelect.value;
@@ -266,17 +290,41 @@
       outputCanvas.height = h;
 
       const activeTrack = stream.getVideoTracks()[0];
-      if (activeTrack.getSettings().deviceId) cameraSelect.value = activeTrack.getSettings().deviceId;
+      const actualDeviceId = activeTrack.getSettings().deviceId;
+      if (actualDeviceId) {
+        cameraSelect.value = actualDeviceId;
+        localStorage.setItem('segmo-camera-id', actualDeviceId);
+      }
 
       // Create processor on first run
       if (!processor) {
         processor = new SegmentationProcessor({
           backgroundMode: 'blur',
           blurRadius: parseInt(document.getElementById('blurRadius').value),
-          quality: 'medium',
-          adaptive: true,
+          quality: 'ultra',
+          adaptive: false,
           useWorker: true,
+          backgroundFixed: true,
           debug: false,
+          autoFrame: { enabled: true, continuous: true },
+          // Diagnostics — starts off, toggle with the Diagnostics button
+          diagnosticsLevel: 'off', // 'off' | 'summary' | 'verbose'
+          diagnosticsIntervalMs: 5000,
+          diagnosticsIncludeImage: true,
+          clientId: localStorage.getItem('segmo-client-id') || (() => {
+            const id = 'demo-' + Math.random().toString(36).slice(2, 8);
+            localStorage.setItem('segmo-client-id', id);
+            return id;
+          })(),
+          onDiagnostic: (event) => {
+            console.log(`[diag] ${event.type}`, event.data);
+            // Send to telemetry server (run: cd telemetry-server && npm start)
+            fetch('http://localhost:5050/api/telemetry', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(event),
+            }).catch(() => {});
+          },
         });
       }
 
@@ -328,26 +376,26 @@
       if (output) {
         ctx.drawImage(output, 0, 0);
 
-        // Debug: draw model ROI crop rectangle (green)
-        // const modelCrop = processor.getModelCropRegion();
-        // if (modelCrop) {
-        //   const af = processor.getCropRect();
-        //   let rx, ry, rw, rh;
-        //   if (af && af.zoom > 1.02) {
-        //     rx = (modelCrop.x - af.x) / af.width * outputCanvas.width;
-        //     ry = (modelCrop.y - af.y) / af.height * outputCanvas.height;
-        //     rw = modelCrop.w / af.width * outputCanvas.width;
-        //     rh = modelCrop.h / af.height * outputCanvas.height;
-        //   } else {
-        //     rx = modelCrop.x * outputCanvas.width;
-        //     ry = modelCrop.y * outputCanvas.height;
-        //     rw = modelCrop.w * outputCanvas.width;
-        //     rh = modelCrop.h * outputCanvas.height;
-        //   }
-        //   ctx.strokeStyle = '#00ff00';
-        //   ctx.lineWidth = 2;
-        //   ctx.strokeRect(rx, ry, rw, rh);
-        // }
+        //Debug: draw model ROI crop rectangle (green)
+        const modelCrop = processor.getModelCropRegion();
+        if (modelCrop) {
+          const af = processor.getCropRect();
+          let rx, ry, rw, rh;
+          if (af && af.zoom > 1.02) {
+            rx = (modelCrop.x - af.x) / af.width * outputCanvas.width;
+            ry = (modelCrop.y - af.y) / af.height * outputCanvas.height;
+            rw = modelCrop.w / af.width * outputCanvas.width;
+            rh = modelCrop.h / af.height * outputCanvas.height;
+          } else {
+            rx = modelCrop.x * outputCanvas.width;
+            ry = modelCrop.y * outputCanvas.height;
+            rw = modelCrop.w * outputCanvas.width;
+            rh = modelCrop.h * outputCanvas.height;
+          }
+          ctx.strokeStyle = '#00ff00';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(rx, ry, rw, rh);
+         }
       } else {
         // 'none' mode — draw raw camera feed
         ctx.drawImage(srcVideo, 0, 0, outputCanvas.width, outputCanvas.height);
@@ -425,7 +473,7 @@
       if (processor) processor.setBackgroundColor(e.target.value);
     });
 
-    const qualBtns = ['btnAuto', 'btnLow', 'btnMedium', 'btnHigh'];
+    const qualBtns = ['btnAuto', 'btnLow', 'btnMedium', 'btnHigh', 'btnUltra'];
     document.getElementById('btnAuto').addEventListener('click', () => {
       autoMode = true;
       if (processor) {
@@ -449,6 +497,11 @@
       if (processor) { processor.setQuality('high'); processor.getAdaptiveController()?.lock(); }
       qualityBadge.textContent = 'high'; setActive(qualBtns, 'btnHigh');
     });
+    document.getElementById('btnUltra').addEventListener('click', () => {
+      autoMode = false;
+      if (processor) { processor.setQuality('ultra'); processor.getAdaptiveController()?.lock(); }
+      qualityBadge.textContent = 'ultra'; setActive(qualBtns, 'btnUltra');
+    });
 
     document.getElementById('btnAutoFrame').addEventListener('click', () => {
       const btn = document.getElementById('btnAutoFrame');
@@ -464,6 +517,25 @@
       if (processor) processor.setBackgroundFixed(on);
       btn.textContent = on ? 'On' : 'Off';
       btn.classList.toggle('active', on);
+    });
+
+    // --- Diagnostics toggle + snapshot ---
+    document.getElementById('btnDiag').addEventListener('click', () => {
+      const btn = document.getElementById('btnDiag');
+      const on = btn.textContent === 'Off';
+      if (processor) processor.setDiagnosticsLevel(on ? 'summary' : 'off');
+      btn.textContent = on ? 'On' : 'Off';
+      btn.classList.toggle('active', on);
+    });
+    document.getElementById('btnSnapshot').addEventListener('click', () => {
+      if (!processor) return;
+      const snapshot = processor.exportDiagnosticSnapshot();
+      console.log('[diag] snapshot', snapshot);
+      fetch('http://localhost:5050/api/telemetry/snapshot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(snapshot),
+      }).catch(() => {});
     });
 
     // --- Background image presets (generated, no external files) ---

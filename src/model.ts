@@ -42,8 +42,7 @@ const DEFAULT_MODEL_URL =
 const LANDSCAPE_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite';
 
-// Google Meet's HD segmentation model — higher quality boundaries
-const MEET_HD_MODEL_URL = '/demo/segm_gpu_hd.tflite';
+
 
 /** Normalized crop region (0-1 fractions of source frame) */
 export interface CropRegion {
@@ -56,6 +55,8 @@ export interface CropRegion {
 export class SegmentationModel {
   private segmenter: ImageSegmenter | null = null;
   private config: Required<ModelConfig>;
+  /** The delegate actually used after init (GPU may fall back to CPU) */
+  actualDelegate: 'GPU' | 'CPU' = 'CPU';
   private resizeCanvas: HTMLCanvasElement | OffscreenCanvas;
   private resizeCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
   private lastMask: Float32Array | null = null;
@@ -79,10 +80,10 @@ export class SegmentationModel {
 
   constructor(config: ModelConfig = {}) {
     this.config = {
-      modelAssetPath: config.modelAssetPath || DEFAULT_MODEL_URL,
-      delegate: config.delegate || 'CPU',
+      modelAssetPath: config.modelAssetPath || LANDSCAPE_MODEL_URL,
+      delegate: config.delegate || 'GPU',
       outputWidth: config.outputWidth || 256,
-      outputHeight: config.outputHeight || 256,
+      outputHeight: config.outputHeight || 144,
     };
 
     // Use HTMLCanvasElement in main thread — MediaPipe's segmentForVideo
@@ -106,15 +107,30 @@ export class SegmentationModel {
       'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm',
     );
 
-    this.segmenter = await ImageSegmenter.createFromOptions(vision, {
+    const opts = {
       baseOptions: {
         modelAssetPath: this.config.modelAssetPath,
         delegate: this.config.delegate,
       },
-      runningMode: 'VIDEO',
+      runningMode: 'VIDEO' as const,
       outputCategoryMask: false,
       outputConfidenceMasks: true,
-    });
+    };
+
+    // Try requested delegate, fall back to CPU if GPU fails
+    try {
+      this.segmenter = await ImageSegmenter.createFromOptions(vision, opts);
+      this.actualDelegate = this.config.delegate;
+    } catch (e) {
+      if (this.config.delegate === 'GPU') {
+        console.warn('[segmo] GPU delegate failed, falling back to CPU:', e);
+        opts.baseOptions.delegate = 'CPU';
+        this.segmenter = await ImageSegmenter.createFromOptions(vision, opts);
+        this.actualDelegate = 'CPU';
+      } else {
+        throw e;
+      }
+    }
   }
 
   /**
@@ -323,6 +339,22 @@ export class SegmentationModel {
       vx: [this.velocity[0], this.velocity[1], this.velocity[2]],
       vy: this.velocityY,
     };
+  }
+
+  /** Update cached bbox from an external source (worker path).
+   *  Call this when segment() isn't used but you have a bbox from the worker. */
+  updateBBoxFromExternal(
+    bbox: { minX: number; minY: number; maxX: number; maxY: number } | null,
+  ): void {
+    if (bbox) {
+      this.cachedBBoxMinX = bbox.minX;
+      this.cachedBBoxMinY = bbox.minY;
+      this.cachedBBoxMaxX = bbox.maxX;
+      this.cachedBBoxMaxY = bbox.maxY;
+      this.cachedBBoxFound = true;
+    } else {
+      this.cachedBBoxFound = false;
+    }
   }
 
   /** Update centroid tracking from an external mask + bbox (worker path).
