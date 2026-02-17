@@ -98,10 +98,14 @@ function segment(bitmap, timestamp, crop) {
   try {
     result = segmenter.segmentForVideo(imageData, timestamp);
   } catch (e) {
+    //console.error('[segmo worker] segmentForVideo failed:', e);
     return;
   }
 
-  if (!result.confidenceMasks || result.confidenceMasks.length === 0) return;
+  if (!result.confidenceMasks || result.confidenceMasks.length === 0) {
+    //console.warn('[segmo worker] segmentForVideo returned no confidence masks');
+    return;
+  }
 
   const firstMask = result.confidenceMasks[0];
   // getAsFloat32Array() forces GPU readback — must be inside timing window

@@ -664,7 +664,13 @@ Chrome 97+, Edge 97+, Firefox 105+, Safari 16.4+.
 
 Requires: WebGL2, `EXT_color_buffer_float`, OffscreenCanvas.
 
-Chrome/Edge use Insertable Streams (zero-copy, lowest latency). Firefox/Safari use a canvas `captureStream()` fallback automatically — no code changes needed.
+| Browser | Inference | Track API | Notes |
+|---------|-----------|-----------|-------|
+| Chrome/Edge | Web Worker (off main thread) | Insertable Streams (zero-copy) | Full performance |
+| Firefox | Web Worker (off main thread) | Canvas `captureStream()` fallback | Slightly higher latency |
+| Safari | Main thread (GPU delegate + ImageData) | Canvas `captureStream()` fallback | ~10ms @ 25-30fps, workers auto-disabled |
+
+All paths are selected automatically — no code changes needed.
 
 Use `SegmentationProcessor.checkCapabilities()` to validate before starting:
 

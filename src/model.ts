@@ -77,6 +77,9 @@ export class SegmentationModel {
   private cachedBBoxMaxX = 0;
   private cachedBBoxMaxY = 0;
   private cachedBBoxFound = false;
+  // Safari returns empty masks when given HTMLCanvasElement — use ImageData instead
+  private useImageData = typeof navigator !== 'undefined' &&
+    /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
 
   constructor(config: ModelConfig = {}) {
     this.config = {
@@ -97,7 +100,7 @@ export class SegmentationModel {
       this.resizeCanvas = new OffscreenCanvas(this.config.outputWidth, this.config.outputHeight);
     }
     this.resizeCtx = this.resizeCanvas.getContext('2d', {
-      willReadFrequently: false,
+      willReadFrequently: this.useImageData,
     })! as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
   }
 
@@ -179,12 +182,14 @@ export class SegmentationModel {
     }
 
     // Run inference
+    // Safari returns empty confidence masks when given HTMLCanvasElement —
+    // use ImageData (raw pixels) which works universally.
+    const input = this.useImageData
+      ? this.resizeCtx.getImageData(0, 0, outputWidth, outputHeight)
+      : this.resizeCanvas as HTMLCanvasElement;
     let result: ImageSegmenterResult;
     try {
-      result = this.segmenter.segmentForVideo(
-        this.resizeCanvas as HTMLCanvasElement,
-        timestamp,
-      );
+      result = this.segmenter.segmentForVideo(input, timestamp);
     } catch (e) {
       console.error('[segmo] segmentForVideo failed:', e);
       return this.lastMask;

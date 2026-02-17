@@ -1,6 +1,6 @@
 {
   "name": "segmo",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Ultra-optimized background segmentation for web video calls. GPU-accelerated pipeline with ROI cropping, alpha matting, foreground recovery, and adaptive quality. Drop-in for LiveKit, WebRTC, or any MediaStreamTrack.",
   "author": "Eyal Fishler <eyalfishler@gmail.com>",
   "license": "PolyForm-Noncommercial-1.0.0",

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5
+
+### Features
+- **Safari support** — automatic fallback to main-thread inference with GPU delegate + ImageData input. Safari's OffscreenCanvas in Web Workers doesn't update `drawImage` between frames, so workers are auto-disabled. Runs at ~10ms @ 25-30fps on Safari.
+- Cross-browser `createProcessedTrack()` — Chrome/Edge use Insertable Streams (zero-copy), Firefox/Safari use canvas `captureStream()` fallback automatically.
+
+### Bug Fixes
+- Fix worker inference timing measuring GPU dispatch (~0.7ms) instead of actual inference (~5-10ms) — `getAsFloat32Array()` readback now included in timing window
+- Fix `avgModelMs` diagnostic dividing by total frames instead of model frames — added separate model frame counter for accurate per-inference average
+- Fix `modelInferenceMs` retaining stale value on interpolated frames — now reset to 0 when model doesn't run
+- Fix model not initializing when Safari auto-disables workers — `useWorker=true` skipped `model.init()`, then worker skip left no model loaded
+- Fix model not initializing on worker init failure fallback — main-thread model now loads when worker fails on any browser
+- Fix Safari returning empty confidence masks from `segmentForVideo` with HTMLCanvasElement — use ImageData input on Safari
+- Fix `qualityLabel` showing 'unknown' in telemetry when adaptive is disabled — falls through to `opts.quality`
+- Fix diagnostic logs array always empty in telemetry — `this.log()` now routes through `diagLog()`
+
 ## 0.1.4
 
 ### Features

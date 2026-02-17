@@ -538,7 +538,15 @@ export class SegmentationProcessor {
     }
 
     // Initialize Web Worker for off-main-thread inference (optional)
-    if (this.opts.useWorker) {
+    // Safari's OffscreenCanvas in workers doesn't update drawImage between frames,
+    // causing the mask to freeze on the first frame. Use main-thread path instead.
+    const isSafari = typeof navigator !== 'undefined' &&
+      /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
+    if (isSafari && this.opts.useWorker) {
+      this.log('Safari detected — disabling Web Worker, using main-thread inference');
+      await this.model.init();
+    }
+    if (this.opts.useWorker && !isSafari) {
       try {
         this.workerClient = new ModelWorkerClient({
           outputWidth: preset.modelWidth,
@@ -560,6 +568,7 @@ export class SegmentationProcessor {
         this.diagLog(`worker-fallback: ${String(e)}`);
         this.workerClient?.destroy();
         this.workerClient = null;
+        await this.model.init();
       }
     }
 
@@ -699,8 +708,8 @@ export class SegmentationProcessor {
         output = this.pipeline.process(frame, mask, motionMap);
         this.metrics.pipelineMs = performance.now() - pipelineStart;
       } else {
+        // Model ran but returned no mask — keep modelInferenceMs (it was a real run)
         this.interpFrameCount++;
-        this.metrics.modelInferenceMs = 0;
         const pipelineStart = performance.now();
         output = this.pipeline.processInterpolated(frame, this.getAccumulatedShift());
         this.metrics.pipelineMs = performance.now() - pipelineStart;

@@ -106,6 +106,11 @@
     "segmo" points to the compiled dist/ — the REAL package with
     full WebGL2 pipeline, all 7 shader stages, adaptive quality, etc.
   -->
+    <!--
+    //
+    //"segmo": "https://unpkg.com/segmo@0.1.4/dist/index.js",
+    //"segmo": "https://cdn.jsdelivr.net/npm/segmo@0.1.4/dist/index.js"
+    -->
   <script type="importmap">
   {
     "imports": {
@@ -128,7 +133,7 @@
       <canvas id="outputCanvas" width="640" height="360"></canvas>
       <span class="video-label">segmo Pipeline</span>
       <div class="stats" id="stats"></div>
-      <div class="badge" id="qualityBadge">auto</div>
+      <div class="badge" id="qualityBadge">ultra</div>
     </div>
   </div>
 
@@ -144,9 +149,9 @@
     <div class="control-group">
       <label>Background</label>
       <div style="display:flex;gap:6px;">
-        <button id="btnBlur" class="active">Blur</button>
+        <button id="btnBlur">Blur</button>
         <button id="btnColor">Color</button>
-        <button id="btnImage">Image</button>
+        <button id="btnImage" class="active">Image</button>
         <button id="btnNone">None</button>
       </div>
     </div>
@@ -220,7 +225,7 @@
     let srcVideo = null;
     let running = false;
     let animId = null;
-    let autoMode = true;
+    let autoMode = false;
 
     const outputCanvas = document.getElementById('outputCanvas');
     const statsEl      = document.getElementById('stats');
@@ -299,13 +304,13 @@
       // Create processor on first run
       if (!processor) {
         processor = new SegmentationProcessor({
-          backgroundMode: 'blur',
-          blurRadius: parseInt(document.getElementById('blurRadius').value),
+          backgroundMode: 'image',
+          //blurRadius: parseInt(document.getElementById('blurRadius').value),
           quality: 'ultra',
           adaptive: false,
           useWorker: true,
           backgroundFixed: true,
-          debug: false,
+          debug: true,
           autoFrame: { enabled: true, continuous: true },
           // Diagnostics — starts off, toggle with the Diagnostics button
           diagnosticsLevel: 'off', // 'off' | 'summary' | 'verbose'
@@ -330,6 +335,12 @@
 
       // init() loads the MediaPipe model and creates the WebGL2 pipeline
       await processor.init(w, h);
+
+      // Load default background image
+      const defaultBg = new Image();
+      defaultBg.crossOrigin = 'anonymous';
+      defaultBg.onload = () => { processor.setBackgroundImage(defaultBg); };
+      defaultBg.src = 'https://cdn.prod.website-files.com/682f84974efa297197249e61/699427c8e95e6b0e1564b60a_background-1.jpg';
 
       statusEl.textContent = '';
       running = true;
